@@ -1,0 +1,3 @@
+"postgres" "MangoDummy@11"
+"app_service" "8c9TElqobx2h3iYwyCHJfeNI"
+"auth_service" "yAUckhSjt75NYF8L3WJHZExb"
