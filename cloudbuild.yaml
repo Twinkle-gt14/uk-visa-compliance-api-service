@@ -1,0 +1,40 @@
+substitutions:
+  _REGION: asia-south1
+  _REPO: uk-visa-compliance
+  _SERVICE: api-service
+  _AR_HOST: ${_REGION}-docker.pkg.dev
+
+steps:
+  # Build the image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "-t"
+      - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+      - "."
+
+  # Push both tags
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"]
+
+  # Deploy via `services replace`, NOT `run deploy` - preserves the
+  # pgbouncer sidecar, VPC connector, and secrets already in service.yaml
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        sed -i "s|image: ${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:.*|image: ${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}|" service.yaml
+        gcloud run services replace service.yaml --region=${_REGION}
+
+images:
+  - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+  - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
