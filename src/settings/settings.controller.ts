@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } fro
 import type { Request } from "express";
 import { AuthGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
-import type { CreateHolidayDto, EmployerProfileDto } from "./settings.dto";
+import type { CreateHolidayDto, EmployerProfileDto, UpdateHolidayDto } from "./settings.dto";
 
 @Controller("settings")
 @UseGuards(AuthGuard)
@@ -36,6 +36,7 @@ export class SettingsController {
   // --- Holidays ---
   @Get("holidays") listHolidays(@Req() req: Request) { return this.settingsService.listHolidays(req.user!.tenantId); }
   @Post("holidays") createHoliday(@Req() req: Request, @Body() body: CreateHolidayDto) { return this.settingsService.createHoliday(req.user!.tenantId, body.date, body.name); }
+  @Patch("holidays/:id") updateHoliday(@Req() req: Request, @Param("id") id: string, @Body() body: UpdateHolidayDto) { return this.settingsService.updateHoliday(req.user!.tenantId, id, body.date, body.name); }
   @Delete("holidays/:id") deleteHoliday(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteHoliday(req.user!.tenantId, id); }
 
   // --- Employer profile (singleton) ---

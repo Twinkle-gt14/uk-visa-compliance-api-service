@@ -23,7 +23,7 @@ const TABLE_BY_KIND: Record<SimpleReferenceKind, string> = {
 function emptyEmployerProfile(): EmployerProfileDto {
   return {
     companyName: "", tradingName: "", registeredAddress: "", companiesHouseNumber: "",
-    sponsorLicenceNumber: "", payeReference: "", accountsOfficeReference: "",
+    sponsorLicenceNumber: "", sponsorName: "", payeReference: "", accountsOfficeReference: "",
     primaryContactName: "", primaryContactEmail: "", primaryContactPhone: "",
   };
 }
@@ -35,6 +35,7 @@ function rowToEmployerProfile(r: any): EmployerProfileDto {
     registeredAddress: r.registered_address ?? "",
     companiesHouseNumber: r.companies_house_number ?? "",
     sponsorLicenceNumber: r.sponsor_licence_number ?? "",
+    sponsorName: r.sponsor_name ?? "",
     payeReference: r.paye_reference ?? "",
     accountsOfficeReference: r.accounts_office_reference ?? "",
     primaryContactName: r.primary_contact_name ?? "",
@@ -132,6 +133,31 @@ export class SettingsService {
     });
   }
 
+  async updateHoliday(tenantId: string, id: string, date?: string, name?: string): Promise<HolidayDto> {
+    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BadRequestException(`Invalid date: "${date}"`);
+    if (name !== undefined && !name.trim()) throw new BadRequestException("Name is required.");
+    return withTenant(tenantId, async (client) => {
+      const sets: string[] = [];
+      const values: any[] = [];
+      let i = 1;
+      if (date !== undefined) { sets.push(`holiday_date = $${i++}`); values.push(date); }
+      if (name !== undefined) { sets.push(`name = $${i++}`); values.push(name.trim()); }
+      if (!sets.length) throw new BadRequestException("Nothing to update.");
+      values.push(id);
+      try {
+        const result = await client.query(
+          `UPDATE reference.holiday SET ${sets.join(", ")} WHERE id = $${i} RETURNING id, holiday_date, name`,
+          values
+        );
+        if (!result.rowCount) throw new NotFoundException("Holiday not found.");
+        return { id: result.rows[0].id, date: result.rows[0].holiday_date.toISOString().slice(0, 10), name: result.rows[0].name };
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`A holiday is already recorded on ${date}.`);
+        throw err;
+      }
+    });
+  }
+
   async deleteHoliday(tenantId: string, id: string): Promise<{ id: string }> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query("DELETE FROM reference.holiday WHERE id = $1 RETURNING id", [id]);
@@ -172,6 +198,7 @@ export class SettingsService {
       if (dto.registeredAddress !== undefined) set("registered_address", dto.registeredAddress || null);
       if (dto.companiesHouseNumber !== undefined) set("companies_house_number", dto.companiesHouseNumber || null);
       if (dto.sponsorLicenceNumber !== undefined) set("sponsor_licence_number", dto.sponsorLicenceNumber || null);
+      if (dto.sponsorName !== undefined) set("sponsor_name", dto.sponsorName || null);
       if (dto.payeReference !== undefined) set("paye_reference", dto.payeReference || null);
       if (dto.accountsOfficeReference !== undefined) set("accounts_office_reference", dto.accountsOfficeReference || null);
       if (dto.primaryContactName !== undefined) set("primary_contact_name", dto.primaryContactName || null);

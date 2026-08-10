@@ -35,6 +35,7 @@ export interface EmployerProfileDto {
   registeredAddress: string;
   companiesHouseNumber: string;
   sponsorLicenceNumber: string;
+  sponsorName: string;
   payeReference: string;
   accountsOfficeReference: string;
   primaryContactName: string;
