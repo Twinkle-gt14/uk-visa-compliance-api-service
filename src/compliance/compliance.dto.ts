@@ -118,3 +118,25 @@ export interface EducationPayScaleDto {
   wales: number | null;
   northernIreland: number | null;
 }
+
+export interface SponsorshipAssessmentDto {
+  id: string;
+  employeeId: string;
+  socCode: string | null;
+  socTitle: string | null;
+  status: string | null;
+  sourceTable: string | null;
+  goingRate: number | null;
+  notes: string;
+  assessedBy: string | null;
+  assessedAt: string;
+}
+
+export interface CreateSponsorshipAssessmentDto {
+  socCode?: string;
+  socTitle?: string;
+  status?: string;
+  sourceTable?: string;
+  goingRate?: number | null;
+  notes?: string;
+}

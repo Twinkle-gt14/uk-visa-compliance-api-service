@@ -12,6 +12,8 @@ import type {
   ImportBatchRecordDto,
   HealthcarePayBandDto,
   EducationPayScaleDto,
+  SponsorshipAssessmentDto,
+  CreateSponsorshipAssessmentDto,
 } from "./compliance.dto";
 
 const GOV_UK_SOURCE_URL = "https://www.gov.uk/guidance/immigration-rules/immigration-rules-appendix-skilled-occupations";
@@ -347,46 +349,58 @@ export class ComplianceService {
         );
       }
 
-      return this.getImportBatch(tenantId, batch.id);
+      return this.buildImportBatchDto(client, batch.id);
     });
   }
 
   async getImportBatch(tenantId: string, batchId: string): Promise<ImportBatchDto> {
-    return withTenant(tenantId, async (client) => {
-      const batchResult = await client.query("SELECT * FROM compliance.import_batch WHERE id = $1", [batchId]);
-      if (!batchResult.rowCount) throw new NotFoundException("Import batch not found.");
-      const b = batchResult.rows[0];
+    return withTenant(tenantId, (client) => this.buildImportBatchDto(client, batchId));
+  }
 
-      const recordsResult = await client.query(
-        `SELECT r.id, r.soc_code, r.source_table, r.outcome, m.soc_title
-         FROM compliance.import_batch_record r
-         LEFT JOIN reference.soc_occupation_master m ON m.tenant_id = r.tenant_id AND m.soc_code = r.soc_code
-         WHERE r.batch_id = $1
-         ORDER BY r.source_table, r.soc_code`,
-        [batchId]
-      );
+  /** Builds the ImportBatchDto using an already-open client/transaction
+   * - never opens its own connection via withTenant(). Calling
+   * withTenant() from inside another withTenant() block would run on a
+   * second, separate connection that can't see the outer transaction's
+   * uncommitted writes yet (e.g. a batch just INSERTed moments earlier
+   * in the same request) - that mismatch is exactly what caused
+   * "Import batch not found" right after a fresh upload. This helper
+   * is what previewImport/approveImport/cancelImport call internally;
+   * the public getImportBatch() above is the only place that opens a
+   * fresh transaction for a standalone fetch. */
+  private async buildImportBatchDto(client: any, batchId: string): Promise<ImportBatchDto> {
+    const batchResult = await client.query("SELECT * FROM compliance.import_batch WHERE id = $1", [batchId]);
+    if (!batchResult.rowCount) throw new NotFoundException("Import batch not found.");
+    const b = batchResult.rows[0];
 
-      const records: ImportBatchRecordDto[] = recordsResult.rows.map((r: any) => ({
-        id: r.id,
-        socCode: r.soc_code,
-        sourceTable: r.source_table,
-        outcome: r.outcome,
-        occupationTitle: r.soc_title ?? null,
-      }));
+    const recordsResult = await client.query(
+      `SELECT r.id, r.soc_code, r.source_table, r.outcome, m.soc_title
+       FROM compliance.import_batch_record r
+       LEFT JOIN reference.soc_occupation_master m ON m.tenant_id = r.tenant_id AND m.soc_code = r.soc_code
+       WHERE r.batch_id = $1
+       ORDER BY r.source_table, r.soc_code`,
+      [batchId]
+    );
 
-      return {
-        id: b.id,
-        sourceFilename: b.source_filename ?? "",
-        status: b.status,
-        matchedCount: b.matched_count,
-        unmatchedCount: b.unmatched_count,
-        duplicateCount: b.duplicate_count,
-        invalidCount: b.invalid_count,
-        uploadedAt: b.uploaded_at,
-        reviewedAt: b.reviewed_at,
-        records,
-      };
-    });
+    const records: ImportBatchRecordDto[] = recordsResult.rows.map((r: any) => ({
+      id: r.id,
+      socCode: r.soc_code,
+      sourceTable: r.source_table,
+      outcome: r.outcome,
+      occupationTitle: r.soc_title ?? null,
+    }));
+
+    return {
+      id: b.id,
+      sourceFilename: b.source_filename ?? "",
+      status: b.status,
+      matchedCount: b.matched_count,
+      unmatchedCount: b.unmatched_count,
+      duplicateCount: b.duplicate_count,
+      invalidCount: b.invalid_count,
+      uploadedAt: b.uploaded_at,
+      reviewedAt: b.reviewed_at,
+      records,
+    };
   }
 
   async approveImport(tenantId: string, batchId: string): Promise<ImportBatchDto> {
@@ -467,7 +481,7 @@ export class ComplianceService {
         [batchId]
       );
 
-      return this.getImportBatch(tenantId, batchId);
+      return this.buildImportBatchDto(client, batchId);
     });
   }
 
@@ -478,7 +492,7 @@ export class ComplianceService {
         [batchId]
       );
       if (!result.rowCount) throw new NotFoundException("Import batch not found or already reviewed.");
-      return this.getImportBatch(tenantId, batchId);
+      return this.buildImportBatchDto(client, batchId);
     });
   }
 
@@ -527,6 +541,67 @@ export class ComplianceService {
         wales: r.wales != null ? Number(r.wales) : null,
         northernIreland: r.northern_ireland != null ? Number(r.northern_ireland) : null,
       }));
+    });
+  }
+
+  // --- Sponsorship Assessment (Pre-Employment Compliance Check) ---
+
+  async listSponsorshipAssessments(tenantId: string, employeeId: string): Promise<SponsorshipAssessmentDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT * FROM compliance.sponsorship_assessment WHERE employee_id = $1 ORDER BY assessed_at DESC`,
+        [employeeId]
+      );
+      return result.rows.map((r: any) => ({
+        id: r.id,
+        employeeId: r.employee_id,
+        socCode: r.soc_code,
+        socTitle: r.soc_title,
+        status: r.status,
+        sourceTable: r.source_table,
+        goingRate: r.going_rate != null ? Number(r.going_rate) : null,
+        notes: r.notes ?? "",
+        assessedBy: r.assessed_by,
+        assessedAt: r.assessed_at,
+      }));
+    });
+  }
+
+  /** Records a snapshot - deliberately append-only (no update/delete
+   * granted on this table, see migration 014's comment) so a past
+   * assessment always shows what was actually seen at the time, even
+   * if the underlying Skilled Worker rule changes later. */
+  async createSponsorshipAssessment(tenantId: string, employeeId: string, userId: string | undefined, dto: CreateSponsorshipAssessmentDto): Promise<SponsorshipAssessmentDto> {
+    return withTenant(tenantId, async (client) => {
+      const employeeExists = await client.query(
+        "SELECT 1 FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        [employeeId]
+      );
+      if (!employeeExists.rowCount) throw new NotFoundException("Candidate not found.");
+
+      const result = await client.query(
+        `INSERT INTO compliance.sponsorship_assessment
+          (tenant_id, employee_id, soc_code, soc_title, status, source_table, going_rate, notes, assessed_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [
+          tenantId, employeeId, dto.socCode || null, dto.socTitle || null, dto.status || null,
+          dto.sourceTable || null, dto.goingRate ?? null, dto.notes || null, userId || null,
+        ]
+      );
+      const r = result.rows[0];
+      return {
+        id: r.id,
+        employeeId: r.employee_id,
+        socCode: r.soc_code,
+        socTitle: r.soc_title,
+        status: r.status,
+        sourceTable: r.source_table,
+        goingRate: r.going_rate != null ? Number(r.going_rate) : null,
+        notes: r.notes ?? "",
+        assessedBy: r.assessed_by,
+        assessedAt: r.assessed_at,
+      };
     });
   }
 }

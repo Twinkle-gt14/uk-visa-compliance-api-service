@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard } from "../auth/auth.guard";
 import { ComplianceService } from "./compliance.service";
-import type { UpdateSkilledWorkerRuleDto } from "./compliance.dto";
+import type { UpdateSkilledWorkerRuleDto, CreateSponsorshipAssessmentDto } from "./compliance.dto";
 
 @Controller("compliance")
 @UseGuards(AuthGuard)
@@ -75,5 +75,15 @@ export class ComplianceController {
   @Get("education-pay-scales")
   listEducationPayScales(@Req() req: Request) {
     return this.complianceService.listEducationPayScales(req.user!.tenantId);
+  }
+
+  @Get("sponsorship-assessments/:employeeId")
+  listSponsorshipAssessments(@Req() req: Request, @Param("employeeId") employeeId: string) {
+    return this.complianceService.listSponsorshipAssessments(req.user!.tenantId, employeeId);
+  }
+
+  @Post("sponsorship-assessments/:employeeId")
+  createSponsorshipAssessment(@Req() req: Request, @Param("employeeId") employeeId: string, @Body() body: CreateSponsorshipAssessmentDto) {
+    return this.complianceService.createSponsorshipAssessment(req.user!.tenantId, employeeId, req.user!.userId, body);
   }
 }
