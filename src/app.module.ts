@@ -5,10 +5,11 @@ import { AttendanceModule } from "./attendance/attendance.module";
 import { LeaveModule } from "./leave/leave.module";
 import { PayslipModule } from "./payslip/payslip.module";
 import { SettingsModule } from "./settings/settings.module";
+import { ComplianceModule } from "./compliance/compliance.module";
 import { HealthController } from "./health.controller";
 
 @Module({
-  imports: [AuthModule, EmployeeModule, AttendanceModule, LeaveModule, PayslipModule, SettingsModule],
+  imports: [AuthModule, EmployeeModule, AttendanceModule, LeaveModule, PayslipModule, SettingsModule, ComplianceModule],
   controllers: [HealthController],
 })
 export class AppModule {}

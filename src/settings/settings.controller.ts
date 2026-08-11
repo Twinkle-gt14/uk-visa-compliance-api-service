@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
@@ -42,4 +43,14 @@ export class SettingsController {
   // --- Employer profile (singleton) ---
   @Get("employer") getEmployer(@Req() req: Request) { return this.settingsService.getEmployerProfile(req.user!.tenantId); }
   @Patch("employer") updateEmployer(@Req() req: Request, @Body() body: Partial<EmployerProfileDto>) { return this.settingsService.updateEmployerProfile(req.user!.tenantId, body); }
+
+  // --- SOC2020 Framework ---
+  @Get("soc2020") listSoc2020(@Req() req: Request) { return this.settingsService.listSoc2020(req.user!.tenantId); }
+
+  @Post("soc2020/upload")
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
+  uploadSoc2020(@Req() req: Request, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException("No file was uploaded.");
+    return this.settingsService.uploadSoc2020(req.user!.tenantId, file.buffer);
+  }
 }

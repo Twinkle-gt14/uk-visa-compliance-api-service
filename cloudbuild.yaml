@@ -22,8 +22,13 @@ steps:
   - name: "gcr.io/cloud-builders/docker"
     args: ["push", "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"]
 
-  # Deploy via `services replace`, NOT `run deploy` - preserves the
-  # pgbouncer sidecar, VPC connector, and secrets already in service.yaml
+  # Deploy via `services replace`, NOT `run deploy` - this is a
+  # multi-container service (api + pgbouncer sidecar, VPC connector,
+  # several secrets). `gcloud run deploy --image=...` only knows how to
+  # manage a single-container service and would silently drop the
+  # sidecar/VPC/secret config on deploy. We only rewrite the `api`
+  # container's image line (pinned to this commit's SHA) and leave the
+  # rest of service.yaml - sidecar image, VPC connector, secrets - untouched.
   - name: "gcr.io/cloud-builders/gcloud"
     entrypoint: bash
     args:

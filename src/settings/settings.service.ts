@@ -1,10 +1,12 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import * as XLSX from "xlsx";
 import { withTenant } from "../db";
 import type {
   SimpleReferenceKind,
   SimpleReferenceItemDto,
   HolidayDto,
   EmployerProfileDto,
+  Soc2020CodeDto,
 } from "./settings.dto";
 
 /** Maps each kind to its real table name via a fixed whitelist (not
@@ -212,6 +214,104 @@ export class SettingsService {
         values
       );
       return rowToEmployerProfile(result.rows[0]);
+    });
+  }
+
+  // --- SOC2020 Framework ---
+
+  async listSoc2020(tenantId: string): Promise<Soc2020CodeDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, soc_code, soc_title, major_group, major_group_title, sub_major_group, sub_major_group_title,
+                minor_group, minor_group_title, change_note, verno
+         FROM reference.soc_occupation_master
+         ORDER BY soc_code`
+      );
+      return result.rows.map((r) => ({
+        id: r.id,
+        socCode: r.soc_code ?? "",
+        socTitle: r.soc_title ?? "",
+        majorGroup: r.major_group ?? "",
+        majorGroupTitle: r.major_group_title ?? "",
+        subMajorGroup: r.sub_major_group ?? "",
+        subMajorGroupTitle: r.sub_major_group_title ?? "",
+        minorGroup: r.minor_group ?? "",
+        minorGroupTitle: r.minor_group_title ?? "",
+        changeNote: r.change_note ?? "",
+        verno: r.verno ?? "",
+      }));
+    });
+  }
+
+  /** Parses the ONS SOC2020 master Excel file and upserts every row
+   * keyed on soc_unit_group (the 4-digit code - the selectable level
+   * per the file's own README sheet), so re-uploading a corrected file
+   * updates existing rows rather than duplicating them. Scans every
+   * sheet in the workbook for one whose header row looks like the
+   * expected columns, rather than assuming sheet order/position,
+   * since a "README" or notes sheet is often included alongside the
+   * data sheet (as it is in the reference file this was built against). */
+  async uploadSoc2020(tenantId: string, fileBuffer: Buffer): Promise<{ imported: number }> {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: "buffer" });
+    } catch {
+      throw new BadRequestException("Couldn't read that file - is it a valid .xlsx spreadsheet?");
+    }
+
+    const REQUIRED_COLUMNS = ["soc_unit_group", "soc_group_title"];
+    let rows: Record<string, any>[] | null = null;
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const candidate = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: null });
+      if (candidate.length && REQUIRED_COLUMNS.every((col) => col in candidate[0])) {
+        rows = candidate;
+        break;
+      }
+    }
+    if (!rows) {
+      throw new BadRequestException(
+        `Couldn't find a sheet with the expected SOC2020 columns (${REQUIRED_COLUMNS.join(", ")}).`
+      );
+    }
+
+    // Source file's own column names (soc_unit_group / soc_group_title)
+    // are kept as-is here since that's what's actually in the .xlsx -
+    // they're mapped onto this app's soc_code / soc_title naming below.
+    const validRows = rows.filter((r) => r.soc_unit_group != null && String(r.soc_unit_group).trim() !== "");
+    if (!validRows.length) {
+      throw new BadRequestException("No rows with a SOC Unit Group code were found in that file.");
+    }
+
+    return withTenant(tenantId, async (client) => {
+      for (const r of validRows) {
+        await client.query(
+          `INSERT INTO reference.soc_occupation_master
+            (tenant_id, major_group, major_group_title, sub_major_group, sub_major_group_title,
+             minor_group, minor_group_title, soc_code, soc_title, change_note, verno)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (tenant_id, soc_code) DO UPDATE SET
+             major_group = EXCLUDED.major_group, major_group_title = EXCLUDED.major_group_title,
+             sub_major_group = EXCLUDED.sub_major_group, sub_major_group_title = EXCLUDED.sub_major_group_title,
+             minor_group = EXCLUDED.minor_group, minor_group_title = EXCLUDED.minor_group_title,
+             soc_title = EXCLUDED.soc_title, change_note = EXCLUDED.change_note,
+             verno = EXCLUDED.verno, uploaded_at = now()`,
+          [
+            tenantId,
+            r.major_group != null ? String(r.major_group) : null,
+            r.major_group_title != null ? String(r.major_group_title) : null,
+            r.sub_major_group != null ? String(r.sub_major_group) : null,
+            r.sub_major_group_title != null ? String(r.sub_major_group_title) : null,
+            r.minor_group != null ? String(r.minor_group) : null,
+            r.minor_group_title != null ? String(r.minor_group_title) : null,
+            String(r.soc_unit_group),
+            r.soc_group_title != null ? String(r.soc_group_title) : null,
+            r.change != null ? String(r.change) : null,
+            r.verno != null ? String(r.verno) : null,
+          ]
+        );
+      }
+      return { imported: validRows.length };
     });
   }
 }

@@ -201,6 +201,7 @@ export class EmployeeService {
         emergencyAddress: e?.address ?? "",
 
         employeeId: m.employee_id_label ?? "",
+        candidateId: m.candidate_id_label ?? "",
         jobTitle: m.job_title,
         department: m.department_name,
         projectWorkBranch: m.project_work_branch ?? "",
@@ -242,7 +243,9 @@ export class EmployeeService {
         visaNumber: v?.visa_number ?? "",
         visaIssueDate: toDateStr(v?.issue_date),
         visaExpiryDate: toDateStr(v?.expiry_date),
-        visaConditions: v?.conditions ?? "",
+        visaConditions: v?.conditions
+          ? v.conditions.replace(/^\{|\}$/g, "").split(",").map((s: string) => s.trim()).filter(Boolean)
+          : [],
         visaFileName: v?.file_reference ?? null,
 
         cosLicenceNumber: c?.licence_number ?? "",
@@ -291,9 +294,9 @@ export class EmployeeService {
             (tenant_id, employee_reference_no, first_name, middle_name, last_name, date_of_birth,
              gender, marital_status, nationality, ni_number_encrypted, ni_number_hash, job_title, department_id,
              employment_type, work_location, work_timing, standard_hours_per_week, soc_number,
-             project_work_branch, sponsored_employee, british_employee, employee_id_label,
+             project_work_branch, sponsored_employee, british_employee, employee_id_label, candidate_id_label,
              job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -301,7 +304,7 @@ export class EmployeeService {
             dto.jobTitle, departmentId, dto.employmentType || null, dto.workLocation || null,
             dto.workTiming || null, dto.standardHoursPerWeek ? Number(dto.standardHoursPerWeek) : null,
             dto.socNumber || null, dto.projectWorkBranch || null, dto.sponsoredEmployee === "Yes",
-            dto.britishEmployee === "Yes", dto.employeeId || null, dto.jobContractFileName || null,
+            dto.britishEmployee === "Yes", dto.employeeId || null, dto.candidateId || null, dto.jobContractFileName || null,
             dto.startDate || null, dto.reportingManager || null, dto.photoFileName || null,
             dto.hourlyRate ? Number(dto.hourlyRate) : null,
           ]
@@ -375,6 +378,7 @@ export class EmployeeService {
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
       if (dto.britishEmployee !== undefined) set("british_employee", dto.britishEmployee === "Yes");
       if (dto.employeeId !== undefined) set("employee_id_label", dto.employeeId || null);
+      if (dto.candidateId !== undefined) set("candidate_id_label", dto.candidateId || null);
       if (dto.jobContractFileName !== undefined) set("job_contract_file_reference", dto.jobContractFileName);
       if (dto.startDate !== undefined) {
         if (!dto.startDate.trim()) throw new BadRequestException("Start date cannot be cleared - it's a required field.");
@@ -523,7 +527,7 @@ export class EmployeeService {
          ON CONFLICT (employee_id) DO UPDATE SET
            visa_type = EXCLUDED.visa_type, visa_number = EXCLUDED.visa_number, issue_date = EXCLUDED.issue_date,
            expiry_date = EXCLUDED.expiry_date, conditions = EXCLUDED.conditions, file_reference = EXCLUDED.file_reference`,
-        [tenantId, employeeId, dto.visaType || null, dto.visaNumber || null, dto.visaIssueDate || null, dto.visaExpiryDate || null, dto.visaConditions || null, dto.visaFileName || null]
+        [tenantId, employeeId, dto.visaType || null, dto.visaNumber || null, dto.visaIssueDate || null, dto.visaExpiryDate || null, Array.isArray(dto.visaConditions) && dto.visaConditions.length ? dto.visaConditions.join(",") : null, dto.visaFileName || null]
       );
     }
 

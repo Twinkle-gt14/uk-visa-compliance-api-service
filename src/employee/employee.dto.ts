@@ -93,6 +93,7 @@ export interface EmployeeUpsertDto {
 
   // Work
   employeeId?: string;
+  candidateId?: string;
   jobTitle: string;
   department: string; // reference.department name or id - see EmployeeService.resolveDepartmentId
   projectWorkBranch?: string;
@@ -132,7 +133,7 @@ export interface EmployeeUpsertDto {
   visaNumber?: string;
   visaIssueDate?: string;
   visaExpiryDate?: string;
-  visaConditions?: string;
+  visaConditions?: string[];
   visaFileName?: string | null;
 
   // Certificate of Sponsorship

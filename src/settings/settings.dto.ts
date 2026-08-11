@@ -42,3 +42,17 @@ export interface EmployerProfileDto {
   primaryContactEmail: string;
   primaryContactPhone: string;
 }
+
+export interface Soc2020CodeDto {
+  id: string;
+  socCode: string;
+  socTitle: string;
+  majorGroup: string;
+  majorGroupTitle: string;
+  subMajorGroup: string;
+  subMajorGroupTitle: string;
+  minorGroup: string;
+  minorGroupTitle: string;
+  changeNote: string;
+  verno: string;
+}
