@@ -52,6 +52,8 @@ spec:
                 secretKeyRef:
                   name: ni-hmac-key
                   key: "2"
+            - name: DOCUMENT_STORAGE_BUCKET
+              value: "uk-visa-compliance-dev-documents"
           startupProbe:
             httpGet:
               path: /health

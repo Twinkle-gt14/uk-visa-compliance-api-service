@@ -43,6 +43,19 @@ export interface EmployerProfileDto {
   primaryContactPhone: string;
 }
 
+export interface JurisdictionDto {
+  id: string;
+  code: string;
+  name: string;
+}
+
+export interface WorkLocationDto {
+  id: string;
+  name: string;
+  jurisdictionId: string | null;
+  jurisdictionName: string | null;
+}
+
 export interface Soc2020CodeDto {
   id: string;
   socCode: string;

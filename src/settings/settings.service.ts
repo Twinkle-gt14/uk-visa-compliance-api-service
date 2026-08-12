@@ -7,6 +7,8 @@ import type {
   HolidayDto,
   EmployerProfileDto,
   Soc2020CodeDto,
+  JurisdictionDto,
+  WorkLocationDto,
 } from "./settings.dto";
 
 /** Maps each kind to its real table name via a fixed whitelist (not
@@ -84,6 +86,96 @@ export class SettingsService {
         );
         if (!result.rowCount) throw new NotFoundException("Not found.");
         return result.rows[0];
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  // --- UK Jurisdiction Master (seed-on-first-read, same pattern as
+  // reference.leave_type / reference.payslip_component) ---
+  private static readonly SEED_JURISDICTIONS = [
+    { code: "england", name: "England" },
+    { code: "scotland", name: "Scotland" },
+    { code: "wales", name: "Wales" },
+    { code: "northern_ireland", name: "Northern Ireland" },
+  ];
+
+  async listJurisdictions(tenantId: string): Promise<JurisdictionDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const existing = await client.query(
+        "SELECT id, code, name FROM reference.uk_jurisdiction WHERE is_active ORDER BY name"
+      );
+      if (existing.rowCount) return existing.rows;
+
+      for (const j of SettingsService.SEED_JURISDICTIONS) {
+        await client.query(
+          "INSERT INTO reference.uk_jurisdiction (tenant_id, code, name) VALUES ($1,$2,$3) ON CONFLICT (tenant_id, code) DO NOTHING",
+          [tenantId, j.code, j.name]
+        );
+      }
+      const seeded = await client.query(
+        "SELECT id, code, name FROM reference.uk_jurisdiction WHERE is_active ORDER BY name"
+      );
+      return seeded.rows;
+    });
+  }
+
+  // --- Work Location (dedicated, not the generic listSimple/createSimple/
+  // updateSimple, since it carries a jurisdiction alongside its name) ---
+  async listWorkLocations(tenantId: string): Promise<WorkLocationDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT w.id, w.name, w.jurisdiction_id, j.name AS jurisdiction_name
+         FROM reference.work_location w
+         LEFT JOIN reference.uk_jurisdiction j ON j.id = w.jurisdiction_id
+         ORDER BY w.name`
+      );
+      return result.rows.map((r: any) => ({
+        id: r.id, name: r.name, jurisdictionId: r.jurisdiction_id, jurisdictionName: r.jurisdiction_name,
+      }));
+    });
+  }
+
+  async createWorkLocation(tenantId: string, name: string, jurisdictionId?: string | null): Promise<WorkLocationDto> {
+    if (!name?.trim()) throw new BadRequestException("Name is required.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `INSERT INTO reference.work_location (tenant_id, name, jurisdiction_id) VALUES ($1,$2,$3) RETURNING id, name, jurisdiction_id`,
+          [tenantId, name.trim(), jurisdictionId || null]
+        );
+        const r = result.rows[0];
+        let jurisdictionName: string | null = null;
+        if (r.jurisdiction_id) {
+          const j = await client.query("SELECT name FROM reference.uk_jurisdiction WHERE id = $1", [r.jurisdiction_id]);
+          jurisdictionName = j.rows[0]?.name ?? null;
+        }
+        return { id: r.id, name: r.name, jurisdictionId: r.jurisdiction_id, jurisdictionName };
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  async updateWorkLocation(tenantId: string, id: string, name: string, jurisdictionId?: string | null): Promise<WorkLocationDto> {
+    if (!name?.trim()) throw new BadRequestException("Name is required.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `UPDATE reference.work_location SET name = $1, jurisdiction_id = $2 WHERE id = $3 RETURNING id, name, jurisdiction_id`,
+          [name.trim(), jurisdictionId || null, id]
+        );
+        if (!result.rowCount) throw new NotFoundException("Not found.");
+        const r = result.rows[0];
+        let jurisdictionName: string | null = null;
+        if (r.jurisdiction_id) {
+          const j = await client.query("SELECT name FROM reference.uk_jurisdiction WHERE id = $1", [r.jurisdiction_id]);
+          jurisdictionName = j.rows[0]?.name ?? null;
+        }
+        return { id: r.id, name: r.name, jurisdictionId: r.jurisdiction_id, jurisdictionName };
       } catch (err: any) {
         if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
         throw err;

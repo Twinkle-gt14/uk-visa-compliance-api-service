@@ -29,10 +29,12 @@ export class SettingsController {
   @Delete("visa-types/:id") deleteVisaType(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "visa_type", id); }
 
   // --- Work Location ---
-  @Get("work-locations") listWorkLocations(@Req() req: Request) { return this.settingsService.listSimple(req.user!.tenantId, "work_location"); }
-  @Post("work-locations") createWorkLocation(@Req() req: Request, @Body() body: { name: string }) { return this.settingsService.createSimple(req.user!.tenantId, "work_location", body.name); }
-  @Patch("work-locations/:id") updateWorkLocation(@Req() req: Request, @Param("id") id: string, @Body() body: { name: string }) { return this.settingsService.updateSimple(req.user!.tenantId, "work_location", id, body.name); }
+  @Get("work-locations") listWorkLocations(@Req() req: Request) { return this.settingsService.listWorkLocations(req.user!.tenantId); }
+  @Post("work-locations") createWorkLocation(@Req() req: Request, @Body() body: { name: string; jurisdictionId?: string }) { return this.settingsService.createWorkLocation(req.user!.tenantId, body.name, body.jurisdictionId); }
+  @Patch("work-locations/:id") updateWorkLocation(@Req() req: Request, @Param("id") id: string, @Body() body: { name: string; jurisdictionId?: string }) { return this.settingsService.updateWorkLocation(req.user!.tenantId, id, body.name, body.jurisdictionId); }
   @Delete("work-locations/:id") deleteWorkLocation(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "work_location", id); }
+
+  @Get("jurisdictions") listJurisdictions(@Req() req: Request) { return this.settingsService.listJurisdictions(req.user!.tenantId); }
 
   // --- Holidays ---
   @Get("holidays") listHolidays(@Req() req: Request) { return this.settingsService.listHolidays(req.user!.tenantId); }

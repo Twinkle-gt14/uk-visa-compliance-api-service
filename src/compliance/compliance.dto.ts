@@ -130,6 +130,18 @@ export interface SponsorshipAssessmentDto {
   notes: string;
   assessedBy: string | null;
   assessedAt: string;
+  proposedRoute: string | null;
+  checks: Record<string, { computed: string | null; override: string | null; result: string | null }> | null;
+  overallResult: string | null;
+  decision: string | null;
+  reviewer: string | null;
+  assessmentDate: string | null;
+  remarks: string | null;
+  islListed: boolean | null;
+  islJurisdiction: string | null;
+  islCriteria: string | null;
+  islRemovalDate: string | null;
+  islSourceVersion: string | null;
 }
 
 export interface CreateSponsorshipAssessmentDto {
@@ -139,4 +151,91 @@ export interface CreateSponsorshipAssessmentDto {
   sourceTable?: string;
   goingRate?: number | null;
   notes?: string;
+  proposedRoute?: string;
+  checks?: Record<string, { computed: string | null; override: string | null; result: string | null }>;
+  overallResult?: string;
+  decision?: string;
+  reviewer?: string;
+  assessmentDate?: string;
+  remarks?: string;
+  islListed?: boolean | null;
+  islJurisdiction?: string;
+  islCriteria?: string;
+  islRemovalDate?: string | null;
+  islSourceVersion?: string;
+}
+
+// --- Immigration Salary List (ISL) ---
+
+export type IslVersionStatus = "Draft" | "Published" | "Superseded" | "Rejected";
+export type IslOutcome = "Matched" | "Not Matched" | "Duplicate" | "Invalid";
+
+export interface IslVersionRecordDto {
+  id: string;
+  socCode: string | null;
+  outcome: IslOutcome;
+  occupationTitle: string | null;
+  jurisdiction: string | null;
+  isListed: boolean | null;
+}
+
+export interface IslVersionDto {
+  id: string;
+  status: IslVersionStatus;
+  sourceFilename: string;
+  sourceVersion: string;
+  sourceUrl: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  uploadedBy: string | null;
+  uploadedAt: string;
+  publishedBy: string | null;
+  publishedAt: string | null;
+  matchedCount: number;
+  notMatchedCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+  records?: IslVersionRecordDto[];
+}
+
+export interface IslLookupResultDto {
+  found: boolean;
+  isListed: boolean | null;
+  jurisdiction: string | null;
+  occupationCriteria: string | null;
+  jurisdictionCriteria: string | null;
+  removalDate: string | null;
+  sourceVersion: string | null;
+  sourceUrl: string | null;
+}
+
+// --- Supporting Evidence (Document Upload & Storage) ---
+
+export type DocumentStatus = "Pending" | "Uploaded" | "Failed" | "Deleted";
+
+export interface SupportingDocumentDto {
+  id: string;
+  employeeId: string;
+  documentType: string;
+  description: string | null;
+  originalFilename: string;
+  contentType: string;
+  sizeBytes: number;
+  status: DocumentStatus;
+  uploadedBy: string | null;
+  uploadedAt: string | null;
+  createdAt: string;
+}
+
+export interface RequestUploadDto {
+  documentType: string;
+  description?: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
+export interface RequestUploadResponseDto {
+  documentId: string;
+  uploadUrl: string;
 }

@@ -213,6 +213,11 @@ export class EmployeeService {
         standardHoursPerWeek: m.standard_hours_per_week?.toString() ?? "",
         hourlyRate: m.hourly_rate?.toString() ?? "",
         socNumber: m.soc_number ?? "",
+        jobDescription: m.job_description ?? "",
+        contractDuration: m.contract_duration ?? "",
+        currentLocation: m.current_location ?? "",
+        currentImmigrationStatus: m.current_immigration_status ?? "",
+        proposedAnnualSalary: m.proposed_annual_salary != null ? String(m.proposed_annual_salary) : "",
         jobContractFileName: m.job_contract_file_reference,
         sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
         britishEmployee: m.british_employee ? "Yes" : "No",
@@ -295,8 +300,9 @@ export class EmployeeService {
              gender, marital_status, nationality, ni_number_encrypted, ni_number_hash, job_title, department_id,
              employment_type, work_location, work_timing, standard_hours_per_week, soc_number,
              project_work_branch, sponsored_employee, british_employee, employee_id_label, candidate_id_label,
-             job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+             job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate,
+             job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -307,6 +313,8 @@ export class EmployeeService {
             dto.britishEmployee === "Yes", dto.employeeId || null, dto.candidateId || null, dto.jobContractFileName || null,
             dto.startDate || null, dto.reportingManager || null, dto.photoFileName || null,
             dto.hourlyRate ? Number(dto.hourlyRate) : null,
+            dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
+            dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
           ]
         );
         masterId = result.rows[0].id;
@@ -374,6 +382,11 @@ export class EmployeeService {
         set("standard_hours_per_week", dto.standardHoursPerWeek ? Number(dto.standardHoursPerWeek) : null);
       }
       if (dto.socNumber !== undefined) set("soc_number", dto.socNumber || null);
+      if (dto.jobDescription !== undefined) set("job_description", dto.jobDescription || null);
+      if (dto.contractDuration !== undefined) set("contract_duration", dto.contractDuration || null);
+      if (dto.currentLocation !== undefined) set("current_location", dto.currentLocation || null);
+      if (dto.currentImmigrationStatus !== undefined) set("current_immigration_status", dto.currentImmigrationStatus || null);
+      if (dto.proposedAnnualSalary !== undefined) set("proposed_annual_salary", dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null);
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
       if (dto.britishEmployee !== undefined) set("british_employee", dto.britishEmployee === "Yes");

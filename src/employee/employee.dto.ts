@@ -105,6 +105,11 @@ export interface EmployeeUpsertDto {
   standardHoursPerWeek?: string;
   hourlyRate?: string; // added for Payslip - the Work step doesn't capture this yet on the frontend
   socNumber?: string;
+  jobDescription?: string;
+  contractDuration?: string;
+  currentLocation?: string;
+  currentImmigrationStatus?: string;
+  proposedAnnualSalary?: string;
   jobContractFileName?: string | null;
   sponsoredEmployee?: string;
   britishEmployee?: string;

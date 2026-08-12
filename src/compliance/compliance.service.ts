@@ -2,6 +2,15 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import * as XLSX from "xlsx";
 import { withTenant } from "../db";
 import { parseAppendixTable, parseHealthcarePayBands, parseEducationPayScales } from "./appendix-parser";
+import { randomUUID } from "crypto";
+import {
+  ALLOWED_CONTENT_TYPES,
+  MAX_UPLOAD_BYTES,
+  buildStorageKey,
+  getSignedUploadUrl,
+  getSignedDownloadUrl,
+  verifyUploadedObject,
+} from "../storage";
 import type {
   SkilledWorkerListItemDto,
   SkilledWorkerSummaryCountsDto,
@@ -14,6 +23,12 @@ import type {
   EducationPayScaleDto,
   SponsorshipAssessmentDto,
   CreateSponsorshipAssessmentDto,
+  IslVersionDto,
+  IslVersionRecordDto,
+  IslLookupResultDto,
+  SupportingDocumentDto,
+  RequestUploadDto,
+  RequestUploadResponseDto,
 } from "./compliance.dto";
 
 const GOV_UK_SOURCE_URL = "https://www.gov.uk/guidance/immigration-rules/immigration-rules-appendix-skilled-occupations";
@@ -76,6 +91,22 @@ export interface ListFilters {
 
 @Injectable()
 export class ComplianceService {
+  /** Table-priority tiebreak for when one SOC code has more than one
+   * active rule at once (a real, legitimate case - e.g. code 1111 is
+   * genuinely active under both Table 1 and Table 2 simultaneously).
+   * Only matters when a filter hasn't already narrowed to a single
+   * source table: picks the broadest/most-primary table as the one
+   * shown in the main grid, so the list stays one row per SOC code
+   * rather than one row per matching rule. The full set is still
+   * visible on the detail page regardless of which one wins here. */
+  private static readonly SOURCE_TABLE_PRIORITY_SQL = `
+    CASE sw.source_table
+      WHEN 'Table 1' THEN 1 WHEN 'Table 2' THEN 2 WHEN 'Table 3' THEN 3
+      WHEN 'Table 1a' THEN 4 WHEN 'Table 2aa' THEN 5 WHEN 'Table 2a' THEN 6 WHEN 'Table 3a' THEN 7
+      WHEN 'Table 2b' THEN 8 WHEN 'Table 6' THEN 9 ELSE 10
+    END
+  `;
+
   async listSkilledWorkerOccupations(tenantId: string, filters: ListFilters) {
     return withTenant(tenantId, async (client) => {
       const page = filters.page ?? 1;
@@ -109,26 +140,41 @@ export class ComplianceService {
       }
 
       const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const priority = ComplianceService.SOURCE_TABLE_PRIORITY_SQL;
 
+      // Filters (including sourceTable, if given) apply BEFORE the
+      // DISTINCT ON collapse - so when a source table is explicitly
+      // filtered, at most one row per SOC code already survives the
+      // WHERE clause and the priority tiebreak below is a no-op.
       const listSql = `
-        SELECT m.soc_code, m.soc_title, m.major_group, m.sub_major_group, m.minor_group,
-               sw.status, sw.source_table, sw.going_rate, sw.going_rate_90, sw.going_rate_80,
-               sw.going_rate_70, sw.effective_from
-        FROM reference.soc_occupation_master m
-        LEFT JOIN compliance.skilled_worker_occupation_master sw
-          ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
-        ${whereSql}
-        ORDER BY m.soc_code
+        SELECT soc_code, soc_title, major_group, sub_major_group, minor_group,
+               status, source_table, going_rate, going_rate_90, going_rate_80, going_rate_70, effective_from
+        FROM (
+          SELECT DISTINCT ON (m.soc_code)
+            m.soc_code, m.soc_title, m.major_group, m.sub_major_group, m.minor_group,
+            sw.status, sw.source_table, sw.going_rate, sw.going_rate_90, sw.going_rate_80,
+            sw.going_rate_70, sw.effective_from
+          FROM reference.soc_occupation_master m
+          LEFT JOIN compliance.skilled_worker_occupation_master sw
+            ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
+          ${whereSql}
+          ORDER BY m.soc_code, ${priority}
+        ) ranked
+        ORDER BY soc_code
         LIMIT $${i} OFFSET $${i + 1}
       `;
       values.push(pageSize, offset);
 
       const countSql = `
         SELECT count(*)::int AS n
-        FROM reference.soc_occupation_master m
-        LEFT JOIN compliance.skilled_worker_occupation_master sw
-          ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
-        ${whereSql}
+        FROM (
+          SELECT DISTINCT ON (m.soc_code) m.soc_code
+          FROM reference.soc_occupation_master m
+          LEFT JOIN compliance.skilled_worker_occupation_master sw
+            ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
+          ${whereSql}
+          ORDER BY m.soc_code, ${priority}
+        ) ranked
       `;
 
       const [listResult, countResult, summary] = await Promise.all([
@@ -154,18 +200,29 @@ export class ComplianceService {
     });
   }
 
+  /** Always the full, unfiltered 412-code picture (per SOC code, not
+   * per rule) - shown as the dashboard-style summary regardless of
+   * whatever filters are applied to the list below it. Uses the same
+   * one-row-per-soc_code collapse as the list query, for the same
+   * reason: a code active in two tables at once must only count once. */
   private async computeSummary(client: any): Promise<SkilledWorkerSummaryCountsDto> {
+    const priority = ComplianceService.SOURCE_TABLE_PRIORITY_SQL;
     const result = await client.query(`
+      WITH ranked AS (
+        SELECT DISTINCT ON (m.soc_code) m.soc_code, sw.id, sw.status
+        FROM reference.soc_occupation_master m
+        LEFT JOIN compliance.skilled_worker_occupation_master sw
+          ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
+        ORDER BY m.soc_code, ${priority}
+      )
       SELECT
         count(*)::int AS total,
-        count(sw.id) FILTER (WHERE sw.id IS NOT NULL)::int AS mapped,
-        count(*) FILTER (WHERE sw.id IS NULL)::int AS not_mapped,
-        count(*) FILTER (WHERE sw.status = 'Eligible')::int AS eligible,
-        count(*) FILTER (WHERE sw.status = 'Not Eligible')::int AS not_eligible,
-        count(*) FILTER (WHERE sw.status IN ('Conditional', 'Transitional'))::int AS conditional_or_transitional
-      FROM reference.soc_occupation_master m
-      LEFT JOIN compliance.skilled_worker_occupation_master sw
-        ON sw.tenant_id = m.tenant_id AND sw.soc_code = m.soc_code AND sw.effective_to IS NULL
+        count(id) FILTER (WHERE id IS NOT NULL)::int AS mapped,
+        count(*) FILTER (WHERE id IS NULL)::int AS not_mapped,
+        count(*) FILTER (WHERE status = 'Eligible')::int AS eligible,
+        count(*) FILTER (WHERE status = 'Not Eligible')::int AS not_eligible,
+        count(*) FILTER (WHERE status IN ('Conditional', 'Transitional'))::int AS conditional_or_transitional
+      FROM ranked
     `);
     const r = result.rows[0];
     return {
@@ -544,6 +601,429 @@ export class ComplianceService {
     });
   }
 
+  // --- Immigration Salary List (ISL) - per
+  // UKVisaCompliance_FSD_Immigration_Salary_List_Master (updated).
+  // Expected import columns (case-sensitive header match; adjust once
+  // a real Home Office-derived template is available, same as the
+  // SOC2020/Appendix parsers were tuned against real files before
+  // going live): "SOC 2020 Code", "Occupation Criteria",
+  // "UK Jurisdiction", "ISL Listed", "Jurisdiction Criteria",
+  // "Removal Date", "Source Version", "Effective From",
+  // "Effective To", "Source URL". One row per (SOC code, jurisdiction)
+  // combination, per FSD 10.4.
+
+  private static pickCell(row: Record<string, any>, ...headers: string[]): any {
+    for (const h of headers) if (h in row && row[h] != null) return row[h];
+    return null;
+  }
+
+  private static parseIslRow(row: Record<string, any>) {
+    const socCode = ComplianceService.pickCell(row, "SOC 2020 Code", "soc_2020_code", "SOC Code");
+    const jurisdictionName = ComplianceService.pickCell(row, "UK Jurisdiction", "Jurisdiction", "uk_jurisdiction");
+    const listedRaw = ComplianceService.pickCell(row, "ISL Listed", "is_listed", "Listed");
+    const isListed = listedRaw == null ? null : /^(yes|true|1)$/i.test(String(listedRaw).trim());
+    return {
+      socCode: socCode != null ? String(socCode).trim() : null,
+      occupationCriteria: ComplianceService.pickCell(row, "Occupation Criteria", "Occupation / ISL Criteria", "occupation_criteria"),
+      jurisdictionName: jurisdictionName != null ? String(jurisdictionName).trim() : null,
+      isListed,
+      jurisdictionCriteria: ComplianceService.pickCell(row, "Jurisdiction Criteria", "jurisdiction_criteria"),
+      removalDate: ComplianceService.pickCell(row, "Removal Date", "removal_date"),
+      sourceVersion: ComplianceService.pickCell(row, "Source Version", "source_version"),
+      effectiveFrom: ComplianceService.pickCell(row, "Effective From", "effective_from"),
+      effectiveTo: ComplianceService.pickCell(row, "Effective To", "effective_to"),
+      sourceUrl: ComplianceService.pickCell(row, "Source URL", "source_url"),
+    };
+  }
+
+  /** Parses the uploaded ISL workbook and stages every row against
+   * this new Draft version - nothing is written to isl_occupation /
+   * isl_jurisdiction_applicability until publishIslVersion() is
+   * called, mirroring the Appendix import's preview-before-write
+   * principle (FSD 10.3: "preview... before publication"). */
+  async previewIslImport(tenantId: string, fileBuffer: Buffer, filename: string, userId: string | undefined): Promise<IslVersionDto> {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: "buffer" });
+    } catch {
+      throw new BadRequestException("Couldn't read that file - is it a valid .xlsx spreadsheet?");
+    }
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: null });
+    if (!rows.length) throw new BadRequestException("That file has no data rows.");
+
+    return withTenant(tenantId, async (client) => {
+      const socCodes = new Set<string>(
+        (await client.query("SELECT soc_code FROM reference.soc_occupation_master")).rows.map((r: any) => r.soc_code)
+      );
+      const jurisdictions = await client.query("SELECT id, name FROM reference.uk_jurisdiction WHERE is_active");
+      const jurisdictionByName = new Map<string, string>(
+        jurisdictions.rows.map((r: any) => [r.name.toLowerCase(), r.id])
+      );
+
+      const versionResult = await client.query(
+        `INSERT INTO compliance.isl_version (tenant_id, status, source_filename, uploaded_by)
+         VALUES ($1,'Draft',$2,$3) RETURNING id`,
+        [tenantId, filename, userId || null]
+      );
+      const versionId = versionResult.rows[0].id;
+
+      const seen = new Set<string>();
+      let matched = 0, notMatched = 0, duplicate = 0, invalid = 0;
+
+      for (const row of rows) {
+        const parsed = ComplianceService.parseIslRow(row);
+        let outcome: "Matched" | "Not Matched" | "Duplicate" | "Invalid";
+
+        if (!parsed.socCode || !parsed.jurisdictionName) {
+          outcome = "Invalid";
+          invalid++;
+        } else {
+          const key = `${parsed.socCode}::${parsed.jurisdictionName.toLowerCase()}`;
+          if (seen.has(key)) {
+            outcome = "Duplicate";
+            duplicate++;
+          } else {
+            seen.add(key);
+            if (!socCodes.has(parsed.socCode) || !jurisdictionByName.has(parsed.jurisdictionName.toLowerCase())) {
+              outcome = "Not Matched";
+              notMatched++;
+            } else {
+              outcome = "Matched";
+              matched++;
+            }
+          }
+        }
+
+        await client.query(
+          `INSERT INTO compliance.isl_version_record (isl_version_id, tenant_id, soc_2020_code, outcome, raw_row_json)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [versionId, tenantId, parsed.socCode, outcome, JSON.stringify(parsed)]
+        );
+      }
+
+      await client.query(
+        `UPDATE compliance.isl_version SET matched_count=$1, not_matched_count=$2, duplicate_count=$3, invalid_count=$4 WHERE id=$5`,
+        [matched, notMatched, duplicate, invalid, versionId]
+      );
+
+      return this.buildIslVersionDto(client, versionId);
+    });
+  }
+
+  private async buildIslVersionDto(client: any, versionId: string): Promise<IslVersionDto> {
+    const vResult = await client.query("SELECT * FROM compliance.isl_version WHERE id = $1", [versionId]);
+    if (!vResult.rowCount) throw new NotFoundException("ISL version not found.");
+    const v = vResult.rows[0];
+
+    const recordsResult = await client.query(
+      `SELECT r.id, r.soc_2020_code, r.outcome, r.raw_row_json, m.soc_title
+       FROM compliance.isl_version_record r
+       LEFT JOIN reference.soc_occupation_master m ON m.tenant_id = r.tenant_id AND m.soc_code = r.soc_2020_code
+       WHERE r.isl_version_id = $1
+       ORDER BY r.soc_2020_code`,
+      [versionId]
+    );
+    const records: IslVersionRecordDto[] = recordsResult.rows.map((r: any) => ({
+      id: r.id,
+      socCode: r.soc_2020_code,
+      outcome: r.outcome,
+      occupationTitle: r.soc_title ?? null,
+      jurisdiction: r.raw_row_json?.jurisdictionName ?? null,
+      isListed: r.raw_row_json?.isListed ?? null,
+    }));
+
+    return {
+      id: v.id,
+      status: v.status,
+      sourceFilename: v.source_filename ?? "",
+      sourceVersion: v.source_version ?? "",
+      sourceUrl: v.source_url ?? "",
+      effectiveFrom: v.effective_from ? String(v.effective_from).slice(0, 10) : null,
+      effectiveTo: v.effective_to ? String(v.effective_to).slice(0, 10) : null,
+      uploadedBy: v.uploaded_by,
+      uploadedAt: v.uploaded_at,
+      publishedBy: v.published_by,
+      publishedAt: v.published_at,
+      matchedCount: v.matched_count,
+      notMatchedCount: v.not_matched_count,
+      duplicateCount: v.duplicate_count,
+      invalidCount: v.invalid_count,
+      records,
+    };
+  }
+
+  async getIslVersion(tenantId: string, versionId: string): Promise<IslVersionDto> {
+    return withTenant(tenantId, (client) => this.buildIslVersionDto(client, versionId));
+  }
+
+  async listIslVersions(tenantId: string): Promise<IslVersionDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query("SELECT id FROM compliance.isl_version ORDER BY uploaded_at DESC LIMIT 20");
+      const versions: IslVersionDto[] = [];
+      for (const row of result.rows) {
+        versions.push(await this.buildIslVersionDto(client, row.id));
+      }
+      return versions;
+    });
+  }
+
+  /** Publishes a Draft version: groups its Matched records by SOC
+   * code into isl_occupation rows, creates the per-jurisdiction
+   * isl_jurisdiction_applicability children, then supersedes whatever
+   * version was previously Published (never edits it - FSD 10.5: "A
+   * published version must not be edited in place"). Only one
+   * Published version is treated as currently active at a time. */
+  async publishIslVersion(tenantId: string, versionId: string, userId: string | undefined, sourceVersion?: string, sourceUrl?: string): Promise<IslVersionDto> {
+    return withTenant(tenantId, async (client) => {
+      const vResult = await client.query("SELECT * FROM compliance.isl_version WHERE id = $1", [versionId]);
+      if (!vResult.rowCount) throw new NotFoundException("ISL version not found.");
+      if (vResult.rows[0].status !== "Draft") {
+        throw new BadRequestException(`This ISL version is already ${vResult.rows[0].status} and cannot be published again.`);
+      }
+
+      const matchedRecords = await client.query(
+        `SELECT * FROM compliance.isl_version_record WHERE isl_version_id = $1 AND outcome = 'Matched'`,
+        [versionId]
+      );
+      if (!matchedRecords.rowCount) {
+        throw new BadRequestException("This version has no matched rows to publish.");
+      }
+
+      const jurisdictions = await client.query("SELECT id, name FROM reference.uk_jurisdiction WHERE is_active");
+      const jurisdictionIdByName = new Map<string, string>(
+        jurisdictions.rows.map((r: any) => [r.name.toLowerCase(), r.id])
+      );
+
+      // Group by SOC code - one isl_occupation row per code, using the
+      // first row's occupation-level fields (criteria/removal/effective
+      // dates), then one applicability child per jurisdiction row.
+      const bySocCode = new Map<string, any[]>();
+      for (const rec of matchedRecords.rows) {
+        const list = bySocCode.get(rec.soc_2020_code) ?? [];
+        list.push(rec.raw_row_json);
+        bySocCode.set(rec.soc_2020_code, list);
+      }
+
+      for (const [socCode, rows] of bySocCode) {
+        const first = rows[0];
+        const occResult = await client.query(
+          `INSERT INTO compliance.isl_occupation
+            (tenant_id, isl_version_id, soc_2020_code, occupation_criteria, removal_date, effective_from, effective_to, is_active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,true)
+           RETURNING id`,
+          [
+            tenantId, versionId, socCode, first.occupationCriteria || null,
+            first.removalDate || null, first.effectiveFrom || new Date().toISOString().slice(0, 10),
+            first.effectiveTo || null,
+          ]
+        );
+        const occupationId = occResult.rows[0].id;
+
+        for (const row of rows) {
+          const jurisdictionId = jurisdictionIdByName.get(String(row.jurisdictionName).toLowerCase());
+          if (!jurisdictionId) continue; // shouldn't happen - already validated as Matched
+          await client.query(
+            `INSERT INTO compliance.isl_jurisdiction_applicability
+              (tenant_id, isl_occupation_id, jurisdiction_id, is_listed, jurisdiction_criteria)
+             VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT (isl_occupation_id, jurisdiction_id) DO UPDATE SET
+               is_listed = EXCLUDED.is_listed, jurisdiction_criteria = EXCLUDED.jurisdiction_criteria`,
+            [tenantId, occupationId, jurisdictionId, row.isListed ?? false, row.jurisdictionCriteria || null]
+          );
+        }
+      }
+
+      // Supersede whatever was previously Published - never edited in place.
+      await client.query(
+        `UPDATE compliance.isl_version SET status = 'Superseded' WHERE tenant_id = $1 AND status = 'Published' AND id != $2`,
+        [tenantId, versionId]
+      );
+
+      await client.query(
+        `UPDATE compliance.isl_version
+         SET status = 'Published', published_by = $1, published_at = now(), source_version = $2, source_url = $3
+         WHERE id = $4`,
+        [userId || null, sourceVersion || null, sourceUrl || null, versionId]
+      );
+
+      return this.buildIslVersionDto(client, versionId);
+    });
+  }
+
+  async rejectIslVersion(tenantId: string, versionId: string): Promise<IslVersionDto> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE compliance.isl_version SET status = 'Rejected' WHERE id = $1 AND status = 'Draft' RETURNING id`,
+        [versionId]
+      );
+      if (!result.rowCount) throw new NotFoundException("ISL version not found or already reviewed.");
+      return this.buildIslVersionDto(client, versionId);
+    });
+  }
+
+  /** Read-only lookup for the Immigration / Sponsorship Assessment
+   * screen (FSD section 5 & 8). Resolves against whichever ISL version
+   * is currently Published - never against Draft/Superseded/Rejected
+   * data (FSD 7: "Expired ISL records must not be used for a new
+   * assessment"). Returns found: false rather than fabricating a
+   * result when there's no published data, no match for this SOC
+   * code, or the work location's jurisdiction isn't set. */
+  async getIslLookup(tenantId: string, socCode: string, jurisdictionName: string | null): Promise<IslLookupResultDto> {
+    const empty: IslLookupResultDto = {
+      found: false, isListed: null, jurisdiction: jurisdictionName, occupationCriteria: null,
+      jurisdictionCriteria: null, removalDate: null, sourceVersion: null, sourceUrl: null,
+    };
+    if (!jurisdictionName) return empty;
+
+    return withTenant(tenantId, async (client) => {
+      const occResult = await client.query(
+        `SELECT o.* FROM compliance.isl_occupation o
+         JOIN compliance.isl_version v ON v.id = o.isl_version_id
+         WHERE v.tenant_id = $1 AND v.status = 'Published' AND o.soc_2020_code = $2`,
+        [tenantId, socCode]
+      );
+      if (!occResult.rowCount) return empty;
+      const occupation = occResult.rows[0];
+
+      const applicabilityResult = await client.query(
+        `SELECT a.* FROM compliance.isl_jurisdiction_applicability a
+         JOIN reference.uk_jurisdiction j ON j.id = a.jurisdiction_id
+         WHERE a.isl_occupation_id = $1 AND lower(j.name) = lower($2)`,
+        [occupation.id, jurisdictionName]
+      );
+      if (!applicabilityResult.rowCount) return empty;
+      const applicability = applicabilityResult.rows[0];
+
+      const versionResult = await client.query("SELECT source_version, source_url FROM compliance.isl_version WHERE id = $1", [occupation.isl_version_id]);
+
+      return {
+        found: true,
+        isListed: applicability.is_listed,
+        jurisdiction: jurisdictionName,
+        occupationCriteria: occupation.occupation_criteria,
+        jurisdictionCriteria: applicability.jurisdiction_criteria,
+        removalDate: occupation.removal_date ? String(occupation.removal_date).slice(0, 10) : null,
+        sourceVersion: versionResult.rows[0]?.source_version ?? null,
+        sourceUrl: versionResult.rows[0]?.source_url ?? null,
+      };
+    });
+  }
+
+  // --- Supporting Evidence (Document Upload & Storage) ---
+
+  private static rowToDocumentDto(r: any): SupportingDocumentDto {
+    return {
+      id: r.id,
+      employeeId: r.employee_id,
+      documentType: r.document_type,
+      description: r.description,
+      originalFilename: r.original_filename,
+      contentType: r.content_type,
+      sizeBytes: Number(r.size_bytes),
+      status: r.status,
+      uploadedBy: r.uploaded_by,
+      uploadedAt: r.uploaded_at,
+      createdAt: r.created_at,
+    };
+  }
+
+  async requestDocumentUpload(tenantId: string, employeeId: string, userId: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
+    if (!ALLOWED_CONTENT_TYPES.has(dto.contentType)) {
+      throw new BadRequestException(`File type "${dto.contentType}" isn't allowed. Allowed types: PDF, JPG, PNG, DOCX.`);
+    }
+    if (dto.sizeBytes > MAX_UPLOAD_BYTES) {
+      throw new BadRequestException(`File is too large - the limit is ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.`);
+    }
+    if (!dto.documentType?.trim()) throw new BadRequestException("Document type is required.");
+
+    return withTenant(tenantId, async (client) => {
+      const employeeExists = await client.query(
+        "SELECT 1 FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        [employeeId]
+      );
+      if (!employeeExists.rowCount) throw new NotFoundException("Candidate not found.");
+
+      const uuid = randomUUID();
+      const storageKey = buildStorageKey(tenantId, employeeId, uuid, dto.filename);
+
+      const result = await client.query(
+        `INSERT INTO compliance.supporting_document
+          (tenant_id, employee_id, document_type, description, original_filename, storage_key, content_type, size_bytes, status, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Pending',$9)
+         RETURNING id`,
+        [tenantId, employeeId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, userId || null]
+      );
+
+      const uploadUrl = await getSignedUploadUrl(storageKey, dto.contentType);
+      return { documentId: result.rows[0].id, uploadUrl };
+    });
+  }
+
+  /** Confirms the client's direct-to-GCS upload actually landed,
+   * verifying against the object itself rather than trusting the
+   * frontend's say-so - flips Pending to Uploaded, or Failed if the
+   * object never showed up. */
+  async confirmDocumentUpload(tenantId: string, documentId: string): Promise<SupportingDocumentDto> {
+    return withTenant(tenantId, async (client) => {
+      const docResult = await client.query(
+        "SELECT * FROM compliance.supporting_document WHERE id = $1 AND deleted_at IS NULL",
+        [documentId]
+      );
+      if (!docResult.rowCount) throw new NotFoundException("Document not found.");
+      const doc = docResult.rows[0];
+
+      const verified = await verifyUploadedObject(doc.storage_key);
+      if (!verified.exists) {
+        await client.query("UPDATE compliance.supporting_document SET status = 'Failed' WHERE id = $1", [documentId]);
+        throw new BadRequestException("The upload didn't complete - the file wasn't found in storage.");
+      }
+
+      const result = await client.query(
+        `UPDATE compliance.supporting_document
+         SET status = 'Uploaded', uploaded_at = now(), size_bytes = $1, checksum_md5 = $2
+         WHERE id = $3 RETURNING *`,
+        [verified.sizeBytes, verified.md5Hash, documentId]
+      );
+      return ComplianceService.rowToDocumentDto(result.rows[0]);
+    });
+  }
+
+  async listDocuments(tenantId: string, employeeId: string): Promise<SupportingDocumentDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT * FROM compliance.supporting_document
+         WHERE employee_id = $1 AND deleted_at IS NULL AND status != 'Failed'
+         ORDER BY created_at DESC`,
+        [employeeId]
+      );
+      return result.rows.map(ComplianceService.rowToDocumentDto);
+    });
+  }
+
+  async getDocumentDownloadUrl(tenantId: string, documentId: string): Promise<{ url: string; filename: string }> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "SELECT storage_key, original_filename FROM compliance.supporting_document WHERE id = $1 AND deleted_at IS NULL AND status = 'Uploaded'",
+        [documentId]
+      );
+      if (!result.rowCount) throw new NotFoundException("Document not found.");
+      const url = await getSignedDownloadUrl(result.rows[0].storage_key);
+      return { url, filename: result.rows[0].original_filename };
+    });
+  }
+
+  async softDeleteDocument(tenantId: string, documentId: string): Promise<{ id: string }> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "UPDATE compliance.supporting_document SET status = 'Deleted', deleted_at = now() WHERE id = $1 AND deleted_at IS NULL RETURNING id",
+        [documentId]
+      );
+      if (!result.rowCount) throw new NotFoundException("Document not found.");
+      return { id: result.rows[0].id };
+    });
+  }
+
   // --- Sponsorship Assessment (Pre-Employment Compliance Check) ---
 
   async listSponsorshipAssessments(tenantId: string, employeeId: string): Promise<SponsorshipAssessmentDto[]> {
@@ -563,6 +1043,18 @@ export class ComplianceService {
         notes: r.notes ?? "",
         assessedBy: r.assessed_by,
         assessedAt: r.assessed_at,
+        proposedRoute: r.proposed_route,
+        checks: r.checks_json,
+        overallResult: r.overall_result,
+        decision: r.decision,
+        reviewer: r.reviewer,
+        assessmentDate: r.assessment_date ? String(r.assessment_date).slice(0, 10) : null,
+        remarks: r.remarks,
+        islListed: r.isl_listed,
+        islJurisdiction: r.isl_jurisdiction,
+        islCriteria: r.isl_criteria,
+        islRemovalDate: r.isl_removal_date ? String(r.isl_removal_date).slice(0, 10) : null,
+        islSourceVersion: r.isl_source_version,
       }));
     });
   }
@@ -581,12 +1073,18 @@ export class ComplianceService {
 
       const result = await client.query(
         `INSERT INTO compliance.sponsorship_assessment
-          (tenant_id, employee_id, soc_code, soc_title, status, source_table, going_rate, notes, assessed_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          (tenant_id, employee_id, soc_code, soc_title, status, source_table, going_rate, notes, assessed_by,
+           proposed_route, checks_json, overall_result, decision, reviewer, assessment_date, remarks,
+           isl_listed, isl_jurisdiction, isl_criteria, isl_removal_date, isl_source_version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          RETURNING *`,
         [
           tenantId, employeeId, dto.socCode || null, dto.socTitle || null, dto.status || null,
           dto.sourceTable || null, dto.goingRate ?? null, dto.notes || null, userId || null,
+          dto.proposedRoute || "Skilled Worker", dto.checks ? JSON.stringify(dto.checks) : null,
+          dto.overallResult || null, dto.decision || null, dto.reviewer || null, dto.assessmentDate || null,
+          dto.remarks || null, dto.islListed ?? null, dto.islJurisdiction || null, dto.islCriteria || null,
+          dto.islRemovalDate || null, dto.islSourceVersion || null,
         ]
       );
       const r = result.rows[0];
@@ -601,6 +1099,18 @@ export class ComplianceService {
         notes: r.notes ?? "",
         assessedBy: r.assessed_by,
         assessedAt: r.assessed_at,
+        proposedRoute: r.proposed_route,
+        checks: r.checks_json,
+        overallResult: r.overall_result,
+        decision: r.decision,
+        reviewer: r.reviewer,
+        assessmentDate: r.assessment_date ? String(r.assessment_date).slice(0, 10) : null,
+        remarks: r.remarks,
+        islListed: r.isl_listed,
+        islJurisdiction: r.isl_jurisdiction,
+        islCriteria: r.isl_criteria,
+        islRemovalDate: r.isl_removal_date ? String(r.isl_removal_date).slice(0, 10) : null,
+        islSourceVersion: r.isl_source_version,
       };
     });
   }

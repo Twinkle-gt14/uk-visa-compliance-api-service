@@ -8,6 +8,7 @@
     "start:dev": "nest start --watch"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.22.0",
     "@nestjs/common": "^11.1.28",
     "@nestjs/core": "^11.1.28",
     "@nestjs/platform-express": "^11.1.28",
