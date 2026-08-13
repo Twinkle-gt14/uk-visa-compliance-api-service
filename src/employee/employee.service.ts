@@ -11,6 +11,7 @@ import type {
   EducationEntryDto,
   CertificationEntryDto,
   RtwCheckEntryDto,
+  DependantEntryDto,
   DocumentEntryDto,
 } from "./employee.dto";
 
@@ -232,7 +233,7 @@ export class EmployeeService {
       if (!masterRes.rowCount) throw new NotFoundException("Employee not found.");
       const m = masterRes.rows[0];
 
-      const [contacts, emergency, bank, quals, certs, passport, visa, cos, rtw, docs] = await Promise.all([
+      const [contacts, emergency, bank, quals, certs, passport, visa, cos, rtw, docs, dependants] = await Promise.all([
         client.query("SELECT * FROM employee.employee_contact_detail WHERE employee_id = $1 AND NOT is_removed", [id]),
         client.query("SELECT * FROM employee.employee_emergency_contact WHERE employee_id = $1 LIMIT 1", [id]),
         client.query("SELECT * FROM employee.employee_bank_detail WHERE employee_id = $1", [id]),
@@ -243,6 +244,7 @@ export class EmployeeService {
         client.query("SELECT * FROM employee.employee_cos_detail WHERE employee_id = $1", [id]),
         client.query("SELECT * FROM employee.employee_rtw_check WHERE employee_id = $1", [id]),
         client.query("SELECT * FROM employee.employee_document WHERE employee_id = $1", [id]),
+        client.query("SELECT * FROM employee.employee_dependant WHERE employee_id = $1", [id]),
       ]);
 
       const ni = await decrypt(client, m.ni_number_encrypted);
@@ -352,6 +354,9 @@ export class EmployeeService {
         rtwChecks: rtw.rows.map((r): RtwCheckEntryDto => ({
           id: r.id, shareCode: r.share_code, rtwReference: r.rtw_reference, dateOfCheck: toDateStr(r.date_of_check),
           status: r.status, expiryDate: toDateStr(r.expiry_date), attachmentFileName: r.attachment_file_reference,
+        })),
+        dependants: dependants.rows.map((r): DependantEntryDto => ({
+          id: r.id, name: r.name, relationship: r.relationship, dateOfBirth: toDateStr(r.date_of_birth),
         })),
         documents: docs.rows.map((r): DocumentEntryDto => ({
           id: r.id, fileName: r.file_reference, documentType: r.document_type,
@@ -651,6 +656,17 @@ export class EmployeeService {
           `INSERT INTO employee.employee_rtw_check (tenant_id, employee_id, share_code, rtw_reference, date_of_check, status, expiry_date, attachment_file_reference)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [tenantId, employeeId, r.shareCode || null, r.rtwReference || null, r.dateOfCheck || null, r.status || null, r.expiryDate || null, r.attachmentFileName || null]
+        );
+      }
+    }
+
+    if (dto.dependants) {
+      await client.query("DELETE FROM employee.employee_dependant WHERE employee_id = $1", [employeeId]);
+      for (const dep of dto.dependants) {
+        await client.query(
+          `INSERT INTO employee.employee_dependant (tenant_id, employee_id, name, relationship, date_of_birth)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [tenantId, employeeId, dep.name || null, dep.relationship || null, dep.dateOfBirth || null]
         );
       }
     }

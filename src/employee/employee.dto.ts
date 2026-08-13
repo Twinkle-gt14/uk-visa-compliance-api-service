@@ -59,6 +59,12 @@ export interface RtwCheckEntryDto {
   expiryDate?: string;
   attachmentFileName?: string | null;
 }
+export interface DependantEntryDto {
+  id?: string;
+  name?: string;
+  relationship?: string;
+  dateOfBirth?: string;
+}
 export interface DocumentEntryDto {
   id?: string;
   fileName: string;
@@ -153,6 +159,9 @@ export interface EmployeeUpsertDto {
 
   // Right to work (repeatable)
   rtwChecks?: RtwCheckEntryDto[];
+
+  // Dependants linked to the visa (repeatable)
+  dependants?: DependantEntryDto[];
 
   // General documents (repeatable)
   documents?: DocumentEntryDto[];
