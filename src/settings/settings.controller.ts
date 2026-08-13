@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
-import type { CreateHolidayDto, EmployerProfileDto, UpdateHolidayDto } from "./settings.dto";
+import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto } from "./settings.dto";
 
 @Controller("settings")
 @UseGuards(AuthGuard)
@@ -45,6 +45,10 @@ export class SettingsController {
   // --- Employer profile (singleton) ---
   @Get("employer") getEmployer(@Req() req: Request) { return this.settingsService.getEmployerProfile(req.user!.tenantId); }
   @Patch("employer") updateEmployer(@Req() req: Request, @Body() body: Partial<EmployerProfileDto>) { return this.settingsService.updateEmployerProfile(req.user!.tenantId, body); }
+
+  // --- Sponsorship profile (singleton) ---
+  @Get("sponsorship") getSponsorship(@Req() req: Request) { return this.settingsService.getSponsorshipProfile(req.user!.tenantId); }
+  @Patch("sponsorship") updateSponsorship(@Req() req: Request, @Body() body: Partial<SponsorshipProfileDto>) { return this.settingsService.updateSponsorshipProfile(req.user!.tenantId, body); }
 
   // --- SOC2020 Framework ---
   @Get("soc2020") listSoc2020(@Req() req: Request) { return this.settingsService.listSoc2020(req.user!.tenantId); }

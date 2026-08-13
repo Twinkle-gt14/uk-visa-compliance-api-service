@@ -101,13 +101,29 @@ export class EmployeeService {
     return created.rows[0].id;
   }
 
-  async list(tenantId: string, page: number, pageSize: number): Promise<{ items: EmployeeSummary[]; total: number; page: number; pageSize: number }> {
+  async list(
+    tenantId: string,
+    page: number,
+    pageSize: number,
+    onboarded?: boolean
+  ): Promise<{ items: EmployeeSummary[]; total: number; page: number; pageSize: number }> {
     return withTenant(tenantId, async (client) => {
       const offset = (page - 1) * pageSize;
+      // `onboarded` filters which side of the pipeline a caller wants:
+      // Candidate Onboarding / Pre-Employment Compliance Check /
+      // Employee Onboarding all want is_onboarded = false (still in
+      // the pre-hire pipeline); Employee Register wants true (actually
+      // onboarded). Omitted entirely returns everyone, for callers
+      // that genuinely don't care about the distinction.
+      const onboardedClause = onboarded === undefined ? "" : "AND m.is_onboarded = $3";
+      const params = onboarded === undefined ? [pageSize, offset] : [pageSize, offset, onboarded];
+      const countClause = onboarded === undefined ? "" : "AND is_onboarded = $1";
+      const countParams = onboarded === undefined ? [] : [onboarded];
+
       const [rows, count] = await Promise.all([
         client.query(
           `SELECT m.id, m.employee_reference_no, m.first_name, m.middle_name, m.last_name,
-                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference,
+                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
                      WHERE employee_id = m.id AND contact_type = 'email' AND is_primary AND NOT is_removed LIMIT 1) AS primary_email,
@@ -133,12 +149,15 @@ export class EmployeeService {
                    ) r) AS rtw
            FROM employee.employee_master m
            JOIN reference.department d ON d.id = m.department_id
-           WHERE NOT m.is_deleted
+           WHERE NOT m.is_deleted ${onboardedClause}
            ORDER BY m.created_at DESC
            LIMIT $1 OFFSET $2`,
-          [pageSize, offset]
+          params
         ),
-        client.query("SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted"),
+        client.query(
+          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted ${countClause}`,
+          countParams
+        ),
       ]);
 
       return {
@@ -149,6 +168,7 @@ export class EmployeeService {
           jobTitle: r.job_title,
           department: r.department_name,
           recordStatus: r.record_status,
+          isOnboarded: r.is_onboarded,
           primaryEmail: r.primary_email ?? null,
           primaryPhone: r.primary_phone ?? null,
           currentLocation: r.current_location ?? null,
@@ -519,6 +539,22 @@ export class EmployeeService {
       );
       if (!result.rowCount) throw new NotFoundException("Employee not found.");
       return { id: result.rows[0].id, recordStatus: result.rows[0].record_status };
+    });
+  }
+
+  /** Employee Onboarding's "Onboard Employee" action - the one-way
+   * transition from "candidate in the pre-hire pipeline" to "employee
+   * in Employee Register". Deliberately one-way (no un-onboard here):
+   * reversing it is a status/record-correction concern, not something
+   * this action needs to support. */
+  async onboardEmployee(tenantId: string, id: string): Promise<{ id: string; isOnboarded: boolean }> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "UPDATE employee.employee_master SET is_onboarded = true, updated_at = now() WHERE id = $1 AND NOT is_deleted RETURNING id, is_onboarded",
+        [id]
+      );
+      if (!result.rowCount) throw new NotFoundException("Employee not found.");
+      return { id: result.rows[0].id, isOnboarded: result.rows[0].is_onboarded };
     });
   }
 

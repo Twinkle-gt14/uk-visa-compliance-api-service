@@ -13,10 +13,11 @@ export class EmployeeController {
   constructor(private readonly employeeService: EmployeeService) {}
 
   @Get()
-  list(@Req() req: Request, @Query("page") page?: string, @Query("pageSize") pageSize?: string) {
+  list(@Req() req: Request, @Query("page") page?: string, @Query("pageSize") pageSize?: string, @Query("onboarded") onboarded?: string) {
     const pageNum = Math.max(1, parseInt(page ?? "1", 10) || 1);
     const sizeNum = Math.min(MAX_PAGE_SIZE, Math.max(1, parseInt(pageSize ?? String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE));
-    return this.employeeService.list(req.user!.tenantId, pageNum, sizeNum);
+    const onboardedFilter = onboarded === undefined ? undefined : onboarded === "true";
+    return this.employeeService.list(req.user!.tenantId, pageNum, sizeNum, onboardedFilter);
   }
 
   @Get(":id")
@@ -37,5 +38,10 @@ export class EmployeeController {
   @Patch(":id/status")
   updateStatus(@Req() req: Request, @Param("id") id: string, @Body() body: UpdateStatusDto) {
     return this.employeeService.updateStatus(req.user!.tenantId, id, body.recordStatus);
+  }
+
+  @Patch(":id/onboard")
+  onboard(@Req() req: Request, @Param("id") id: string) {
+    return this.employeeService.onboardEmployee(req.user!.tenantId, id);
   }
 }

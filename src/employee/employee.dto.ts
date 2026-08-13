@@ -197,6 +197,7 @@ export interface EmployeeSummary {
   jobTitle: string;
   department: string;
   recordStatus: EmployeeStatus;
+  isOnboarded: boolean;
   primaryEmail: string | null;
   primaryPhone: string | null;
   currentLocation: string | null;

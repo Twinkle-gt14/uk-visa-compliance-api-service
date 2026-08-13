@@ -31,16 +31,25 @@ export interface UpdateHolidayDto {
 
 export interface EmployerProfileDto {
   companyName: string;
-  tradingName: string;
-  registeredAddress: string;
-  companiesHouseNumber: string;
-  sponsorLicenceNumber: string;
-  sponsorName: string;
-  payeReference: string;
-  accountsOfficeReference: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  county: string;
+  postcode: string;
+  country: string;
   primaryContactName: string;
   primaryContactEmail: string;
   primaryContactPhone: string;
+}
+
+/** Sponsor Licence Number and Sponsor Name (Settings > Sponsorship) -
+ * split out from Employer, but still stored on the same
+ * reference.employer_profile row: both are genuinely singleton,
+ * tenant-level facts, just organised as two screens instead of one. */
+export interface SponsorshipProfileDto {
+  companyName: string;
+  sponsorLicenceNumber: string;
+  sponsorName: string;
 }
 
 export interface JurisdictionDto {

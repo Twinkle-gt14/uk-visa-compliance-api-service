@@ -6,6 +6,7 @@ import type {
   SimpleReferenceItemDto,
   HolidayDto,
   EmployerProfileDto,
+  SponsorshipProfileDto,
   Soc2020CodeDto,
   JurisdictionDto,
   WorkLocationDto,
@@ -26,8 +27,7 @@ const TABLE_BY_KIND: Record<SimpleReferenceKind, string> = {
 
 function emptyEmployerProfile(): EmployerProfileDto {
   return {
-    companyName: "", tradingName: "", registeredAddress: "", companiesHouseNumber: "",
-    sponsorLicenceNumber: "", sponsorName: "", payeReference: "", accountsOfficeReference: "",
+    companyName: "", addressLine1: "", addressLine2: "", city: "", county: "", postcode: "", country: "",
     primaryContactName: "", primaryContactEmail: "", primaryContactPhone: "",
   };
 }
@@ -35,16 +35,27 @@ function emptyEmployerProfile(): EmployerProfileDto {
 function rowToEmployerProfile(r: any): EmployerProfileDto {
   return {
     companyName: r.company_name ?? "",
-    tradingName: r.trading_name ?? "",
-    registeredAddress: r.registered_address ?? "",
-    companiesHouseNumber: r.companies_house_number ?? "",
-    sponsorLicenceNumber: r.sponsor_licence_number ?? "",
-    sponsorName: r.sponsor_name ?? "",
-    payeReference: r.paye_reference ?? "",
-    accountsOfficeReference: r.accounts_office_reference ?? "",
+    addressLine1: r.address_line1 ?? "",
+    addressLine2: r.address_line2 ?? "",
+    city: r.city ?? "",
+    county: r.county ?? "",
+    postcode: r.postcode ?? "",
+    country: r.country ?? "",
     primaryContactName: r.primary_contact_name ?? "",
     primaryContactEmail: r.primary_contact_email ?? "",
     primaryContactPhone: r.primary_contact_phone ?? "",
+  };
+}
+
+function emptySponsorshipProfile(): SponsorshipProfileDto {
+  return { companyName: "", sponsorLicenceNumber: "", sponsorName: "" };
+}
+
+function rowToSponsorshipProfile(r: any): SponsorshipProfileDto {
+  return {
+    companyName: r.company_name ?? "",
+    sponsorLicenceNumber: r.sponsor_licence_number ?? "",
+    sponsorName: r.sponsor_name ?? "",
   };
 }
 
@@ -288,13 +299,12 @@ export class SettingsService {
       const set = (col: string, val: any) => { sets.push(`${col} = $${i++}`); values.push(val); };
 
       if (dto.companyName !== undefined) set("company_name", dto.companyName || null);
-      if (dto.tradingName !== undefined) set("trading_name", dto.tradingName || null);
-      if (dto.registeredAddress !== undefined) set("registered_address", dto.registeredAddress || null);
-      if (dto.companiesHouseNumber !== undefined) set("companies_house_number", dto.companiesHouseNumber || null);
-      if (dto.sponsorLicenceNumber !== undefined) set("sponsor_licence_number", dto.sponsorLicenceNumber || null);
-      if (dto.sponsorName !== undefined) set("sponsor_name", dto.sponsorName || null);
-      if (dto.payeReference !== undefined) set("paye_reference", dto.payeReference || null);
-      if (dto.accountsOfficeReference !== undefined) set("accounts_office_reference", dto.accountsOfficeReference || null);
+      if (dto.addressLine1 !== undefined) set("address_line1", dto.addressLine1 || null);
+      if (dto.addressLine2 !== undefined) set("address_line2", dto.addressLine2 || null);
+      if (dto.city !== undefined) set("city", dto.city || null);
+      if (dto.county !== undefined) set("county", dto.county || null);
+      if (dto.postcode !== undefined) set("postcode", dto.postcode || null);
+      if (dto.country !== undefined) set("country", dto.country || null);
       if (dto.primaryContactName !== undefined) set("primary_contact_name", dto.primaryContactName || null);
       if (dto.primaryContactEmail !== undefined) set("primary_contact_email", dto.primaryContactEmail || null);
       if (dto.primaryContactPhone !== undefined) set("primary_contact_phone", dto.primaryContactPhone || null);
@@ -306,6 +316,41 @@ export class SettingsService {
         values
       );
       return rowToEmployerProfile(result.rows[0]);
+    });
+  }
+
+  /** Sponsorship (Settings > Sponsorship) reads/writes the same
+   * reference.employer_profile row as Employer - just a different
+   * field subset, since both are genuinely one-per-tenant facts. */
+  async getSponsorshipProfile(tenantId: string): Promise<SponsorshipProfileDto> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query("SELECT * FROM reference.employer_profile WHERE tenant_id = $1", [tenantId]);
+      return result.rowCount ? rowToSponsorshipProfile(result.rows[0]) : emptySponsorshipProfile();
+    });
+  }
+
+  async updateSponsorshipProfile(tenantId: string, dto: Partial<SponsorshipProfileDto>): Promise<SponsorshipProfileDto> {
+    return withTenant(tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO reference.employer_profile (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING",
+        [tenantId]
+      );
+
+      const sets: string[] = [];
+      const values: any[] = [];
+      let i = 1;
+      const set = (col: string, val: any) => { sets.push(`${col} = $${i++}`); values.push(val); };
+
+      if (dto.sponsorLicenceNumber !== undefined) set("sponsor_licence_number", dto.sponsorLicenceNumber || null);
+      if (dto.sponsorName !== undefined) set("sponsor_name", dto.sponsorName || null);
+      set("updated_at", new Date());
+
+      values.push(tenantId);
+      const result = await client.query(
+        `UPDATE reference.employer_profile SET ${sets.join(", ")} WHERE tenant_id = $${i} RETURNING *`,
+        values
+      );
+      return rowToSponsorshipProfile(result.rows[0]);
     });
   }
 
