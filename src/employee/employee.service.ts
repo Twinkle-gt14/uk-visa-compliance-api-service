@@ -163,13 +163,13 @@ export class EmployeeService {
                    ) r) AS rtw
            FROM employee.employee_master m
            JOIN reference.department d ON d.id = m.department_id
-           WHERE NOT m.is_deleted ${onboardedClause}
+           WHERE NOT m.is_deleted AND m.record_status != 'Draft' ${onboardedClause}
            ORDER BY m.created_at DESC
            LIMIT $1 OFFSET $2`,
           params
         ),
         client.query(
-          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted ${countClause}`,
+          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted AND record_status != 'Draft' ${countClause}`,
           countParams
         ),
       ]);
@@ -271,7 +271,7 @@ export class EmployeeService {
       const masterRes = await client.query(
         `SELECT m.*, d.name AS department_name
          FROM employee.employee_master m
-         JOIN reference.department d ON d.id = m.department_id
+         LEFT JOIN reference.department d ON d.id = m.department_id
          WHERE m.id = $1 AND NOT m.is_deleted`,
         [id]
       );
@@ -306,9 +306,9 @@ export class EmployeeService {
         id: m.id,
         recordStatus: m.record_status,
         photoFileName: m.photo_file_reference,
-        firstName: m.first_name,
+        firstName: m.first_name ?? "",
         middleName: m.middle_name ?? "",
-        lastName: m.last_name,
+        lastName: m.last_name ?? "",
         dateOfBirth: toDateStr(m.date_of_birth),
         gender: m.gender ?? "",
         nationality: m.nationality ?? "",
@@ -336,8 +336,8 @@ export class EmployeeService {
 
         employeeId: m.employee_id_label ?? "",
         candidateId: m.candidate_id_label ?? "",
-        jobTitle: m.job_title,
-        department: m.department_name,
+        jobTitle: m.job_title ?? "",
+        department: m.department_name ?? "",
         projectWorkBranch: m.project_work_branch ?? "",
         reportingManager: m.reporting_manager_name ?? "",
         employmentType: m.employment_type ?? "",
@@ -415,6 +415,96 @@ export class EmployeeService {
     });
   }
 
+  /** Creates the near-empty row a wizard needs to exist *before* the
+   * user has entered anything real, purely so document-evidence
+   * uploads (which carry a hard FK to this table) have something
+   * valid to reference from step one. `clientId` lets the frontend
+   * generate the id up front and use it consistently for every
+   * PATCH and upload from the very first render, rather than getting
+   * an id back only after some round trip. Every other field stays
+   * NULL until finalize() (or a plain update() along the way) fills
+   * it in - see migrations/023_employee_draft_support.sql for why
+   * that's allowed at the DB level now. */
+  async createDraft(tenantId: string, clientId: string | undefined, onboardedOnCreate: boolean): Promise<{ id: string }> {
+    return withTenant(tenantId, async (client) => {
+      const candidateIdLabel = await nextSequenceNumber(client, tenantId, "candidate_id", "C", 6);
+      const employeeIdLabel = onboardedOnCreate
+        ? await nextSequenceNumber(client, tenantId, "employee_number", "E", 6)
+        : null;
+      const result = await client.query(
+        `INSERT INTO employee.employee_master
+          (id, tenant_id, employee_reference_no, record_status, is_onboarded, employee_id_label, candidate_id_label)
+         VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, 'Draft', $4, $5, $6)
+         RETURNING id`,
+        [clientId ?? null, tenantId, genRef(), !!onboardedOnCreate, employeeIdLabel, candidateIdLabel]
+      );
+      return { id: result.rows[0].id };
+    });
+  }
+
+  /** Promotes a Draft to Active. Re-runs the same required-field
+   * validation that used to gate create() itself, now deferred to
+   * here since the row already exists by the time the wizard reaches
+   * Review & Submit. A record that's already Active just falls
+   * through to a normal update() - a double-submit (e.g. a retried
+   * request) shouldn't error just because it isn't a draft anymore. */
+  async finalize(tenantId: string, id: string, dto: EmployeeUpsertDto): Promise<{ id: string }> {
+    assertRequiredFields(dto);
+    return withTenant(tenantId, async (client) => {
+      const existing = await client.query(
+        "SELECT record_status FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        [id]
+      );
+      if (!existing.rowCount) throw new NotFoundException("Employee not found.");
+      if (existing.rows[0].record_status !== "Draft") {
+        return this.update(tenantId, id, dto);
+      }
+
+      const departmentId = await this.resolveDepartmentId(client, tenantId, dto.department);
+      const niEncrypted = await encrypt(client, dto.nationalInsuranceNumber);
+      const niHash = await hmacHash(client, dto.nationalInsuranceNumber);
+
+      try {
+        await client.query(
+          `UPDATE employee.employee_master SET
+             first_name=$1, middle_name=$2, last_name=$3, date_of_birth=$4, gender=$5, marital_status=$6,
+             nationality=$7, ni_number_encrypted=$8, ni_number_hash=$9, job_title=$10, department_id=$11,
+             employment_type=$12, work_location=$13, work_timing=$14, standard_hours_per_week=$15, soc_number=$16,
+             project_work_branch=$17, sponsored_employee=$18, british_employee=$19, job_contract_file_reference=$20,
+             date_of_joining=$21, reporting_manager_name=$22, photo_file_reference=$23, hourly_rate=$24,
+             job_description=$25, contract_duration=$26, current_location=$27, current_immigration_status=$28,
+             proposed_annual_salary=$29, record_status='Active', updated_at=now()
+           WHERE id=$30`,
+          [
+            dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
+            dto.gender || null, dto.maritalStatus || null, dto.nationality || null, niEncrypted, niHash,
+            dto.jobTitle, departmentId, dto.employmentType || null, dto.workLocation || null,
+            dto.workTiming || null, dto.standardHoursPerWeek ? Number(dto.standardHoursPerWeek) : null,
+            dto.socNumber || null, dto.projectWorkBranch || null, dto.sponsoredEmployee === "Yes",
+            dto.britishEmployee === "Yes", dto.jobContractFileName || null,
+            dto.startDate || null, dto.reportingManager || null, dto.photoFileName || null,
+            dto.hourlyRate ? Number(dto.hourlyRate) : null,
+            dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
+            dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
+            id,
+          ]
+        );
+      } catch (err: any) {
+        if (err?.constraint === "uq_employee_tenant_ni") {
+          throw new ConflictException("A record with this National Insurance number already exists.");
+        }
+        throw err;
+      }
+
+      await this.writeChildRecords(client, tenantId, id, dto);
+      return { id };
+    });
+  }
+
+  /** Legacy direct-create path (row didn't exist before this call) -
+   * kept for any caller that isn't going through the draft-first
+   * wizard flow. The wizards themselves now always createDraft() then
+   * finalize(). */
   async create(tenantId: string, dto: EmployeeUpsertDto, idempotencyKey?: string): Promise<{ id: string }> {
     assertRequiredFields(dto);
 
@@ -499,7 +589,8 @@ export class EmployeeService {
         [id]
       );
       if (!existing.rowCount) throw new NotFoundException("Employee not found.");
-      if (existing.rows[0].record_status !== "Active") {
+      const isDraft = existing.rows[0].record_status === "Draft";
+      if (!isDraft && existing.rows[0].record_status !== "Active") {
         throw new BadRequestException(
           `This employee is ${existing.rows[0].record_status.toLowerCase()} and cannot be edited - reactivate the record first.`
         );
@@ -514,8 +605,8 @@ export class EmployeeService {
       if (dto.middleName !== undefined) set("middle_name", dto.middleName || null);
       if (dto.lastName !== undefined) set("last_name", dto.lastName);
       if (dto.dateOfBirth !== undefined) {
-        if (!dto.dateOfBirth.trim()) throw new BadRequestException("Date of birth cannot be cleared - it's a required field.");
-        set("date_of_birth", dto.dateOfBirth);
+        if (!isDraft && !dto.dateOfBirth.trim()) throw new BadRequestException("Date of birth cannot be cleared - it's a required field.");
+        set("date_of_birth", dto.dateOfBirth || null);
       }
       if (dto.gender !== undefined) set("gender", dto.gender || null);
       if (dto.maritalStatus !== undefined) set("marital_status", dto.maritalStatus || null);
@@ -526,8 +617,8 @@ export class EmployeeService {
       }
       if (dto.jobTitle !== undefined) set("job_title", dto.jobTitle);
       if (dto.department !== undefined) {
-        if (!dto.department.trim()) throw new BadRequestException("Department cannot be cleared - it's a required field.");
-        set("department_id", await this.resolveDepartmentId(client, tenantId, dto.department));
+        if (!isDraft && !dto.department.trim()) throw new BadRequestException("Department cannot be cleared - it's a required field.");
+        set("department_id", dto.department.trim() ? await this.resolveDepartmentId(client, tenantId, dto.department) : null);
       }
       if (dto.employmentType !== undefined) set("employment_type", dto.employmentType || null);
       if (dto.workLocation !== undefined) set("work_location", dto.workLocation || null);
@@ -552,8 +643,8 @@ export class EmployeeService {
       // generated once on create() and never changes afterwards.
       if (dto.jobContractFileName !== undefined) set("job_contract_file_reference", dto.jobContractFileName);
       if (dto.startDate !== undefined) {
-        if (!dto.startDate.trim()) throw new BadRequestException("Start date cannot be cleared - it's a required field.");
-        set("date_of_joining", dto.startDate);
+        if (!isDraft && !dto.startDate.trim()) throw new BadRequestException("Start date cannot be cleared - it's a required field.");
+        set("date_of_joining", dto.startDate || null);
       }
       if (dto.reportingManager !== undefined) set("reporting_manager_name", dto.reportingManager || null);
       if (dto.photoFileName !== undefined) set("photo_file_reference", dto.photoFileName);
