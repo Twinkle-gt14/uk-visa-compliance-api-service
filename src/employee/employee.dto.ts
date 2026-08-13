@@ -205,6 +205,7 @@ export interface EmployeeSummary {
   id: string;
   employeeReferenceNo: string;
   candidateId: string;
+  employeeId: string;
   fullName: string;
   jobTitle: string;
   department: string;

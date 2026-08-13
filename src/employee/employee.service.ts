@@ -136,7 +136,7 @@ export class EmployeeService {
 
       const [rows, count] = await Promise.all([
         client.query(
-          `SELECT m.id, m.employee_reference_no, m.candidate_id_label, m.first_name, m.middle_name, m.last_name,
+          `SELECT m.id, m.employee_reference_no, m.candidate_id_label, m.employee_id_label, m.first_name, m.middle_name, m.last_name,
                   m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
@@ -179,6 +179,7 @@ export class EmployeeService {
           id: r.id,
           employeeReferenceNo: r.employee_reference_no,
           candidateId: r.candidate_id_label ?? "",
+          employeeId: r.employee_id_label ?? "",
           fullName: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" "),
           jobTitle: r.job_title,
           department: r.department_name,

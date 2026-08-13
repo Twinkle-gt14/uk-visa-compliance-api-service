@@ -12,6 +12,7 @@ export const ALLOWED_CONTENT_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png",
+  "image/webp",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
 ]);
 
