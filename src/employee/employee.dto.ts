@@ -79,8 +79,7 @@ export interface DocumentEntryDto {
   expiryDate?: string;
 }
 
-export interface EmployeeUpsertDto {
-  // Personal
+export interface EmployeeUpsertDto {  // Personal
   photoFileName?: string | null;
   firstName: string;
   middleName?: string;
@@ -106,6 +105,12 @@ export interface EmployeeUpsertDto {
   // Work
   employeeId?: string;
   candidateId?: string;
+  /** Set by Employee Register's "Add Employee" page only (not
+   * Candidate Onboarding) - tells create() this person is already an
+   * employee, not a pre-hire candidate: is_onboarded=true and an
+   * Employee Number get set immediately rather than waiting for a
+   * separate Employee Onboarding action. */
+  onboardedOnCreate?: boolean;
   jobTitle: string;
   department: string; // reference.department name or id - see EmployeeService.resolveDepartmentId
   projectWorkBranch?: string;

@@ -46,6 +46,20 @@ function genRef(): string {
   return `EMP-${Date.now().toString(36).toUpperCase()}`;
 }
 
+/** Atomic per-tenant counter (see migrations/022_sequence_counter.sql)
+ * - the UPSERT...RETURNING is what makes this safe under concurrent
+ * creates, unlike reading a max value and adding one. */
+async function nextSequenceNumber(client: PoolClient, tenantId: string, sequenceName: string, prefix: string, digits: number): Promise<string> {
+  const result = await client.query(
+    `INSERT INTO reference.sequence_counter (tenant_id, sequence_name, next_value)
+     VALUES ($1, $2, 1)
+     ON CONFLICT (tenant_id, sequence_name) DO UPDATE SET next_value = reference.sequence_counter.next_value + 1
+     RETURNING next_value`,
+    [tenantId, sequenceName]
+  );
+  return `${prefix}${String(result.rows[0].next_value).padStart(digits, "0")}`;
+}
+
 /** Postgres DATE columns come back from `pg` as JS Date objects, which
  * NestJS's default JSON serialization renders as full ISO timestamps
  * ("2026-01-01T00:00:00.000Z") - not the plain "YYYY-MM-DD" string
@@ -412,6 +426,17 @@ export class EmployeeService {
       const departmentId = await this.resolveDepartmentId(client, tenantId, dto.department);
       const niEncrypted = await encrypt(client, dto.nationalInsuranceNumber);
       const niHash = await hmacHash(client, dto.nationalInsuranceNumber);
+      // System-generated, not user-entered - whatever the caller sent
+      // for candidateId is ignored (the field is read-only on both
+      // wizard frontends now).
+      const candidateIdLabel = await nextSequenceNumber(client, tenantId, "candidate_id", "C", 6);
+      // Employee Register's "Add Employee" page creates someone who's
+      // already an employee, not a pre-hire candidate - they get an
+      // Employee Number and is_onboarded=true immediately rather than
+      // needing a separate Employee Onboarding action afterwards.
+      const employeeIdLabel = dto.onboardedOnCreate
+        ? await nextSequenceNumber(client, tenantId, "employee_number", "E", 6)
+        : null;
 
       let masterId: string;
       try {
@@ -422,8 +447,9 @@ export class EmployeeService {
              employment_type, work_location, work_timing, standard_hours_per_week, soc_number,
              project_work_branch, sponsored_employee, british_employee, employee_id_label, candidate_id_label,
              job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate,
-             job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+             job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary,
+             is_onboarded)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -431,11 +457,12 @@ export class EmployeeService {
             dto.jobTitle, departmentId, dto.employmentType || null, dto.workLocation || null,
             dto.workTiming || null, dto.standardHoursPerWeek ? Number(dto.standardHoursPerWeek) : null,
             dto.socNumber || null, dto.projectWorkBranch || null, dto.sponsoredEmployee === "Yes",
-            dto.britishEmployee === "Yes", dto.employeeId || null, dto.candidateId || null, dto.jobContractFileName || null,
+            dto.britishEmployee === "Yes", employeeIdLabel, candidateIdLabel, dto.jobContractFileName || null,
             dto.startDate || null, dto.reportingManager || null, dto.photoFileName || null,
             dto.hourlyRate ? Number(dto.hourlyRate) : null,
             dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
+            !!dto.onboardedOnCreate,
           ]
         );
         masterId = result.rows[0].id;
@@ -511,8 +538,12 @@ export class EmployeeService {
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
       if (dto.britishEmployee !== undefined) set("british_employee", dto.britishEmployee === "Yes");
-      if (dto.employeeId !== undefined) set("employee_id_label", dto.employeeId || null);
-      if (dto.candidateId !== undefined) set("candidate_id_label", dto.candidateId || null);
+      // employee_id_label is intentionally not settable here either -
+      // generated once (either on create() for a direct Employee
+      // Register add, or on onboardEmployee() for a candidate being
+      // onboarded), never editable afterwards.
+      // candidate_id_label is intentionally not settable here - it's
+      // generated once on create() and never changes afterwards.
       if (dto.jobContractFileName !== undefined) set("job_contract_file_reference", dto.jobContractFileName);
       if (dto.startDate !== undefined) {
         if (!dto.startDate.trim()) throw new BadRequestException("Start date cannot be cleared - it's a required field.");
@@ -555,15 +586,19 @@ export class EmployeeService {
    * transition from "candidate in the pre-hire pipeline" to "employee
    * in Employee Register". Deliberately one-way (no un-onboard here):
    * reversing it is a status/record-correction concern, not something
-   * this action needs to support. */
-  async onboardEmployee(tenantId: string, id: string): Promise<{ id: string; isOnboarded: boolean }> {
+   * this action needs to support. Also where Employee Number
+   * (employee_id_label, E000001...) is generated - it doesn't exist
+   * before this point, matching how Candidate ID is generated once on
+   * create() rather than editable at any point. */
+  async onboardEmployee(tenantId: string, id: string): Promise<{ id: string; isOnboarded: boolean; employeeId: string }> {
     return withTenant(tenantId, async (client) => {
+      const employeeIdLabel = await nextSequenceNumber(client, tenantId, "employee_number", "E", 6);
       const result = await client.query(
-        "UPDATE employee.employee_master SET is_onboarded = true, updated_at = now() WHERE id = $1 AND NOT is_deleted RETURNING id, is_onboarded",
-        [id]
+        "UPDATE employee.employee_master SET is_onboarded = true, employee_id_label = $1, updated_at = now() WHERE id = $2 AND NOT is_deleted RETURNING id, is_onboarded, employee_id_label",
+        [employeeIdLabel, id]
       );
       if (!result.rowCount) throw new NotFoundException("Employee not found.");
-      return { id: result.rows[0].id, isOnboarded: result.rows[0].is_onboarded };
+      return { id: result.rows[0].id, isOnboarded: result.rows[0].is_onboarded, employeeId: result.rows[0].employee_id_label };
     });
   }
 
