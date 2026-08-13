@@ -232,7 +232,12 @@ export class EmployeeService {
       {
         type: "assessment",
         status: assessmentStatus,
-        nextCheckDate: r.date_of_joining ? toDateStr(r.date_of_joining) : null,
+        // No natural "next check due" concept for Assessment (unlike
+        // CoS/Visa/RTW, which have real expiry dates) - previously
+        // stood in with the candidate's start date, but that read as
+        // a recheck date rather than what it actually meant. Left
+        // blank for now rather than reusing a misleading proxy.
+        nextCheckDate: null,
         lastUpdated: assessment?.assessment_date ?? null,
         updatedBy: assessment?.reviewer ?? null,
       },
