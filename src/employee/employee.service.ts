@@ -122,7 +122,7 @@ export class EmployeeService {
 
       const [rows, count] = await Promise.all([
         client.query(
-          `SELECT m.id, m.employee_reference_no, m.first_name, m.middle_name, m.last_name,
+          `SELECT m.id, m.employee_reference_no, m.candidate_id_label, m.first_name, m.middle_name, m.last_name,
                   m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
@@ -143,7 +143,7 @@ export class EmployeeService {
                      FROM employee.employee_visa_detail WHERE employee_id = m.id
                    ) v) AS visa,
                   (SELECT row_to_json(r) FROM (
-                     SELECT status, date_of_check, expiry_date
+                     SELECT status, statutory_excuse_established, date_of_check, expiry_date
                      FROM employee.employee_rtw_check WHERE employee_id = m.id
                      ORDER BY date_of_check DESC NULLS LAST LIMIT 1
                    ) r) AS rtw
@@ -164,6 +164,7 @@ export class EmployeeService {
         items: rows.rows.map((r) => ({
           id: r.id,
           employeeReferenceNo: r.employee_reference_no,
+          candidateId: r.candidate_id_label ?? "",
           fullName: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" "),
           jobTitle: r.job_title,
           department: r.department_name,
@@ -207,7 +208,11 @@ export class EmployeeService {
         : visa.visa_type && visa.visa_number && visa.expiry_date
         ? "Completed"
         : "In Progress";
-    const rtwStatus = !rtw ? "Not Started" : rtw.status === "Approved" ? "Completed" : "In Progress";
+    // "Approved"/"Pending"/"Rejected" (status) has no UI control that
+    // ever sets it - statutory_excuse_established (Yes/No) is the
+    // field the Right to Work form actually captures, so that's what
+    // genuinely represents whether this check succeeded.
+    const rtwStatus = !rtw ? "Not Started" : rtw.statutory_excuse_established === "Yes" ? "Completed" : "In Progress";
 
     return [
       {
@@ -372,8 +377,12 @@ export class EmployeeService {
         cosFileName: c?.file_reference ?? null,
 
         rtwChecks: rtw.rows.map((r): RtwCheckEntryDto => ({
-          id: r.id, shareCode: r.share_code, rtwReference: r.rtw_reference, dateOfCheck: toDateStr(r.date_of_check),
-          status: r.status, expiryDate: toDateStr(r.expiry_date), attachmentFileName: r.attachment_file_reference,
+          id: r.id, checkMethod: r.check_method, documentEvidenceType: r.document_evidence_type,
+          shareCode: r.share_code, rtwReference: r.rtw_reference,
+          checkedByName: r.checked_by_name, checkedByRole: r.checked_by_role,
+          dateOfCheck: toDateStr(r.date_of_check), statutoryExcuseEstablished: r.statutory_excuse_established,
+          status: r.status, expiryDate: toDateStr(r.expiry_date), remarks: r.remarks,
+          attachmentFileName: r.attachment_file_reference,
         })),
         dependants: dependants.rows.map((r): DependantEntryDto => ({
           id: r.id, name: r.name, relationship: r.relationship, dateOfBirth: toDateStr(r.date_of_birth),
@@ -689,9 +698,17 @@ export class EmployeeService {
       await client.query("DELETE FROM employee.employee_rtw_check WHERE employee_id = $1", [employeeId]);
       for (const r of dto.rtwChecks) {
         await client.query(
-          `INSERT INTO employee.employee_rtw_check (tenant_id, employee_id, share_code, rtw_reference, date_of_check, status, expiry_date, attachment_file_reference)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [tenantId, employeeId, r.shareCode || null, r.rtwReference || null, r.dateOfCheck || null, r.status || null, r.expiryDate || null, r.attachmentFileName || null]
+          `INSERT INTO employee.employee_rtw_check
+             (tenant_id, employee_id, check_method, document_evidence_type, share_code, rtw_reference,
+              checked_by_name, checked_by_role, date_of_check, statutory_excuse_established, status,
+              expiry_date, remarks, attachment_file_reference)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            tenantId, employeeId, r.checkMethod || null, r.documentEvidenceType || null,
+            r.shareCode || null, r.rtwReference || null, r.checkedByName || null, r.checkedByRole || null,
+            r.dateOfCheck || null, r.statutoryExcuseEstablished || null, r.status || null,
+            r.expiryDate || null, r.remarks || null, r.attachmentFileName || null,
+          ]
         );
       }
     }

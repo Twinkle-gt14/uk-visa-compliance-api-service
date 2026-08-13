@@ -52,11 +52,17 @@ export interface CertificationEntryDto {
 }
 export interface RtwCheckEntryDto {
   id?: string;
+  checkMethod?: string;
+  documentEvidenceType?: string;
   shareCode?: string;
   rtwReference?: string;
+  checkedByName?: string;
+  checkedByRole?: string;
   dateOfCheck?: string;
+  statutoryExcuseEstablished?: string;
   status?: string;
   expiryDate?: string;
+  remarks?: string;
   attachmentFileName?: string | null;
 }
 export interface DependantEntryDto {
@@ -193,6 +199,7 @@ export interface ComplianceCheckSummary {
 export interface EmployeeSummary {
   id: string;
   employeeReferenceNo: string;
+  candidateId: string;
   fullName: string;
   jobTitle: string;
   department: string;
