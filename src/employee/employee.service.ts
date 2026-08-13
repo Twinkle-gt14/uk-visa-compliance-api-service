@@ -106,7 +106,30 @@ export class EmployeeService {
       const [rows, count] = await Promise.all([
         client.query(
           `SELECT m.id, m.employee_reference_no, m.first_name, m.middle_name, m.last_name,
-                  m.job_title, m.record_status, d.name AS department_name
+                  m.job_title, m.record_status, m.start_date, m.current_location, m.photo_file_reference,
+                  d.name AS department_name,
+                  (SELECT value FROM employee.employee_contact_detail
+                     WHERE employee_id = m.id AND contact_type = 'email' AND is_primary AND NOT is_removed LIMIT 1) AS primary_email,
+                  (SELECT value FROM employee.employee_contact_detail
+                     WHERE employee_id = m.id AND contact_type = 'phone' AND is_primary AND NOT is_removed LIMIT 1) AS primary_phone,
+                  (SELECT row_to_json(a) FROM (
+                     SELECT decision, assessment_date, reviewer
+                     FROM compliance.sponsorship_assessment
+                     WHERE employee_id = m.id ORDER BY assessed_at DESC LIMIT 1
+                   ) a) AS latest_assessment,
+                  (SELECT row_to_json(c) FROM (
+                     SELECT licence_number, sponsor_name, certificate_number, assigned_date, expiry_date
+                     FROM employee.employee_cos_detail WHERE employee_id = m.id
+                   ) c) AS cos,
+                  (SELECT row_to_json(v) FROM (
+                     SELECT visa_type, visa_number, issue_date, expiry_date
+                     FROM employee.employee_visa_detail WHERE employee_id = m.id
+                   ) v) AS visa,
+                  (SELECT row_to_json(r) FROM (
+                     SELECT status, date_of_check, expiry_date
+                     FROM employee.employee_rtw_check WHERE employee_id = m.id
+                     ORDER BY date_of_check DESC NULLS LAST LIMIT 1
+                   ) r) AS rtw
            FROM employee.employee_master m
            JOIN reference.department d ON d.id = m.department_id
            WHERE NOT m.is_deleted
@@ -125,12 +148,76 @@ export class EmployeeService {
           jobTitle: r.job_title,
           department: r.department_name,
           recordStatus: r.record_status,
+          primaryEmail: r.primary_email ?? null,
+          primaryPhone: r.primary_phone ?? null,
+          currentLocation: r.current_location ?? null,
+          startDate: r.start_date ?? null,
+          photoFileName: r.photo_file_reference ?? null,
+          complianceChecks: EmployeeService.buildComplianceChecks(r),
         })),
         total: count.rows[0].n,
         page,
         pageSize,
       };
     });
+  }
+
+  /** Derives each of the 4 Pre-Employment Compliance Check rows from
+   * whatever's actually on file - no fabricated dates or reviewers.
+   * "Completed" only fires once the record actually holds a real
+   * decision/outcome, not just because a row exists (a half-filled
+   * CoS/Visa record is still "In Progress"). */
+  private static buildComplianceChecks(r: any): EmployeeSummary["complianceChecks"] {
+    const assessment = r.latest_assessment;
+    const cos = r.cos;
+    const visa = r.visa;
+    const rtw = r.rtw;
+
+    const assessmentStatus = !assessment ? "Not Started" : assessment.decision ? "Completed" : "In Progress";
+    const cosStatus =
+      !cos || (!cos.licence_number && !cos.sponsor_name && !cos.certificate_number)
+        ? "Not Started"
+        : cos.certificate_number && cos.assigned_date && cos.expiry_date
+        ? "Completed"
+        : "In Progress";
+    const visaStatus =
+      !visa || (!visa.visa_type && !visa.visa_number)
+        ? "Not Started"
+        : visa.visa_type && visa.visa_number && visa.expiry_date
+        ? "Completed"
+        : "In Progress";
+    const rtwStatus = !rtw ? "Not Started" : rtw.status === "Approved" ? "Completed" : "In Progress";
+
+    return [
+      {
+        type: "assessment",
+        status: assessmentStatus,
+        nextCheckDate: r.start_date ?? null,
+        lastUpdated: assessment?.assessment_date ?? null,
+        updatedBy: assessment?.reviewer ?? null,
+      },
+      {
+        type: "cos",
+        status: cosStatus,
+        nextCheckDate: cos?.expiry_date ?? null,
+        lastUpdated: cos?.assigned_date ?? null,
+        updatedBy: null,
+      },
+      {
+        type: "visa",
+        status: visaStatus,
+        nextCheckDate: visa?.expiry_date ?? null,
+        lastUpdated: visa?.issue_date ?? null,
+        updatedBy: null,
+      },
+      {
+        type: "rtw",
+        status: rtwStatus,
+        nextCheckDate: rtw?.expiry_date ?? null,
+        lastUpdated: rtw?.date_of_check ?? null,
+        updatedBy: null,
+      },
+    ];
   }
 
   async getById(tenantId: string, id: string): Promise<EmployeeUpsertDto & { id: string; recordStatus: EmployeeStatus }> {

@@ -164,6 +164,23 @@ export interface UpdateStatusDto {
   recordStatus: EmployeeStatus;
 }
 
+export type ComplianceCheckType = "assessment" | "cos" | "visa" | "rtw";
+export type ComplianceCheckStatus = "Not Started" | "In Progress" | "Completed";
+
+/** One row of the Pre-Employment Compliance Check summary table (per
+ * candidate, per check type). `lastUpdated`/`updatedBy` are only as
+ * good as the underlying table's audit columns - cos_detail/
+ * visa_detail/rtw_check have no per-row audit trail today, so those
+ * fall back to whatever date field exists on that record rather than
+ * a fabricated "last updated" timestamp. */
+export interface ComplianceCheckSummary {
+  type: ComplianceCheckType;
+  status: ComplianceCheckStatus;
+  nextCheckDate: string | null;
+  lastUpdated: string | null;
+  updatedBy: string | null;
+}
+
 export interface EmployeeSummary {
   id: string;
   employeeReferenceNo: string;
@@ -171,4 +188,10 @@ export interface EmployeeSummary {
   jobTitle: string;
   department: string;
   recordStatus: EmployeeStatus;
+  primaryEmail: string | null;
+  primaryPhone: string | null;
+  currentLocation: string | null;
+  startDate: string | null;
+  photoFileName: string | null;
+  complianceChecks: ComplianceCheckSummary[];
 }
