@@ -11,6 +11,20 @@ import {
   getSignedDownloadUrl,
   verifyUploadedObject,
 } from "../storage";
+
+/** Postgres DATE columns come back from `pg` as JS Date objects, not
+ * strings - String(dateObject) produces the full toString() format
+ * ("Thu Aug 13 2026 00:00:00 GMT+...") rather than an ISO date, and
+ * slicing the first 10 characters of *that* silently produces
+ * garbage like "Thu Aug 13" instead of "2026-08-13". That garbled
+ * value only ever caused a problem once something fed it back into a
+ * save - see the assessmentDate/islRemovalDate mappings below. Same
+ * fix already used in employee.service.ts's toDateStr(). */
+function toDateStr(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
 import type {
   SkilledWorkerListItemDto,
   SkilledWorkerSummaryCountsDto,
@@ -1048,12 +1062,12 @@ export class ComplianceService {
         overallResult: r.overall_result,
         decision: r.decision,
         reviewer: r.reviewer,
-        assessmentDate: r.assessment_date ? String(r.assessment_date).slice(0, 10) : null,
+        assessmentDate: toDateStr(r.assessment_date),
         remarks: r.remarks,
         islListed: r.isl_listed,
         islJurisdiction: r.isl_jurisdiction,
         islCriteria: r.isl_criteria,
-        islRemovalDate: r.isl_removal_date ? String(r.isl_removal_date).slice(0, 10) : null,
+        islRemovalDate: toDateStr(r.isl_removal_date),
         islSourceVersion: r.isl_source_version,
       }));
     });
@@ -1104,12 +1118,12 @@ export class ComplianceService {
         overallResult: r.overall_result,
         decision: r.decision,
         reviewer: r.reviewer,
-        assessmentDate: r.assessment_date ? String(r.assessment_date).slice(0, 10) : null,
+        assessmentDate: toDateStr(r.assessment_date),
         remarks: r.remarks,
         islListed: r.isl_listed,
         islJurisdiction: r.isl_jurisdiction,
         islCriteria: r.isl_criteria,
-        islRemovalDate: r.isl_removal_date ? String(r.isl_removal_date).slice(0, 10) : null,
+        islRemovalDate: toDateStr(r.isl_removal_date),
         islSourceVersion: r.isl_source_version,
       };
     });
