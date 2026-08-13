@@ -106,7 +106,7 @@ export class EmployeeService {
       const [rows, count] = await Promise.all([
         client.query(
           `SELECT m.id, m.employee_reference_no, m.first_name, m.middle_name, m.last_name,
-                  m.job_title, m.record_status, m.start_date, m.current_location, m.photo_file_reference,
+                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
                      WHERE employee_id = m.id AND contact_type = 'email' AND is_primary AND NOT is_removed LIMIT 1) AS primary_email,
@@ -151,7 +151,7 @@ export class EmployeeService {
           primaryEmail: r.primary_email ?? null,
           primaryPhone: r.primary_phone ?? null,
           currentLocation: r.current_location ?? null,
-          startDate: r.start_date ?? null,
+          startDate: toDateStr(r.date_of_joining) || null,
           photoFileName: r.photo_file_reference ?? null,
           complianceChecks: EmployeeService.buildComplianceChecks(r),
         })),
@@ -192,7 +192,7 @@ export class EmployeeService {
       {
         type: "assessment",
         status: assessmentStatus,
-        nextCheckDate: r.start_date ?? null,
+        nextCheckDate: r.date_of_joining ? toDateStr(r.date_of_joining) : null,
         lastUpdated: assessment?.assessment_date ?? null,
         updatedBy: assessment?.reviewer ?? null,
       },
