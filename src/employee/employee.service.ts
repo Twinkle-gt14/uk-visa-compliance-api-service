@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import type { PoolClient } from "pg";
 import { withTenant } from "../db";
+import { AuthService } from "../auth/auth.service";
 import type {
   EmployeeUpsertDto,
   EmployeeSummary,
@@ -93,6 +94,8 @@ function assertRequiredFields(dto: EmployeeUpsertDto): void {
 
 @Injectable()
 export class EmployeeService {
+  constructor(private readonly authService: AuthService) {}
+
   /** Looks up reference.department by name (trimmed, case-insensitive),
    * creating it if it doesn't exist yet. This remains a pragmatic
    * stand-in, not a real Reference Data module - normalizing the match
@@ -688,15 +691,47 @@ export class EmployeeService {
    * before this point, matching how Candidate ID is generated once on
    * create() rather than editable at any point. */
   async onboardEmployee(tenantId: string, id: string): Promise<{ id: string; isOnboarded: boolean; employeeId: string }> {
-    return withTenant(tenantId, async (client) => {
+    const result = await withTenant(tenantId, async (client) => {
       const employeeIdLabel = await nextSequenceNumber(client, tenantId, "employee_number", "E", 6);
-      const result = await client.query(
+      const updateRes = await client.query(
         "UPDATE employee.employee_master SET is_onboarded = true, employee_id_label = $1, updated_at = now() WHERE id = $2 AND NOT is_deleted RETURNING id, is_onboarded, employee_id_label",
         [employeeIdLabel, id]
       );
-      if (!result.rowCount) throw new NotFoundException("Employee not found.");
-      return { id: result.rows[0].id, isOnboarded: result.rows[0].is_onboarded, employeeId: result.rows[0].employee_id_label };
+      if (!updateRes.rowCount) throw new NotFoundException("Employee not found.");
+
+      const employerRes = await client.query(
+        "SELECT email_domain FROM reference.employer_profile WHERE tenant_id = $1",
+        [tenantId]
+      );
+      const emailDomain: string | null = employerRes.rows[0]?.email_domain || null;
+
+      return {
+        id: updateRes.rows[0].id,
+        isOnboarded: updateRes.rows[0].is_onboarded,
+        employeeId: updateRes.rows[0].employee_id_label,
+        emailDomain,
+      };
     });
+
+    // Credential provisioning happens after the transaction commits,
+    // against security.credential via AuthService's own connection -
+    // that table lives outside employee.employee_master's tenant-RLS
+    // transaction entirely (see Database Design - Common Platform
+    // Standards, Section 4.6), so it's a genuinely separate write, not
+    // part of the same atomic unit. If Employer Settings hasn't had an
+    // email domain configured yet, onboarding still succeeds - the
+    // employee just doesn't get a login credential. Re-running this
+    // endpoint is NOT a safe way to backfill one afterwards (it would
+    // mint a second, different employee_id_label via
+    // nextSequenceNumber and overwrite the real one) - a dedicated
+    // "create login for this employee" action is needed for that case,
+    // out of scope here.
+    if (result.emailDomain) {
+      const email = `${result.employeeId}@${result.emailDomain}`;
+      await this.authService.createEmployeeCredential(tenantId, result.id, email, result.employeeId);
+    }
+
+    return { id: result.id, isOnboarded: result.isOnboarded, employeeId: result.employeeId };
   }
 
   /** Writes every repeatable/1:1 child table that's present in the

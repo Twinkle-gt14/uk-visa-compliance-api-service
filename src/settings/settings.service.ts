@@ -28,7 +28,7 @@ const TABLE_BY_KIND: Record<SimpleReferenceKind, string> = {
 function emptyEmployerProfile(): EmployerProfileDto {
   return {
     companyName: "", addressLine1: "", addressLine2: "", city: "", county: "", postcode: "", country: "",
-    primaryContactName: "", primaryContactEmail: "", primaryContactPhone: "",
+    primaryContactName: "", primaryContactEmail: "", primaryContactPhone: "", emailDomain: "",
   };
 }
 
@@ -44,6 +44,7 @@ function rowToEmployerProfile(r: any): EmployerProfileDto {
     primaryContactName: r.primary_contact_name ?? "",
     primaryContactEmail: r.primary_contact_email ?? "",
     primaryContactPhone: r.primary_contact_phone ?? "",
+    emailDomain: r.email_domain ?? "",
   };
 }
 
@@ -308,6 +309,7 @@ export class SettingsService {
       if (dto.primaryContactName !== undefined) set("primary_contact_name", dto.primaryContactName || null);
       if (dto.primaryContactEmail !== undefined) set("primary_contact_email", dto.primaryContactEmail || null);
       if (dto.primaryContactPhone !== undefined) set("primary_contact_phone", dto.primaryContactPhone || null);
+      if (dto.emailDomain !== undefined) set("email_domain", dto.emailDomain?.trim().toLowerCase() || null);
       set("updated_at", new Date());
 
       values.push(tenantId);

@@ -1,12 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
-import { AuthGuard } from "../auth/auth.guard";
+import { AuthGuard, HrAdminGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
 import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto } from "./settings.dto";
 
 @Controller("settings")
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, HrAdminGuard)
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 

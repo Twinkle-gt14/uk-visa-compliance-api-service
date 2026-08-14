@@ -1,11 +1,11 @@
 import { BadRequestException, Body, Controller, Get, Param, Patch, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { AuthGuard } from "../auth/auth.guard";
+import { AuthGuard, HrAdminGuard } from "../auth/auth.guard";
 import { PayslipService } from "./payslip.service";
 import type { UpdatePayslipComponentDto } from "./payslip.dto";
 
 @Controller("payslip")
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, HrAdminGuard)
 export class PayslipController {
   constructor(private readonly payslipService: PayslipService) {}
 

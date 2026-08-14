@@ -40,6 +40,11 @@ export interface EmployerProfileDto {
   primaryContactName: string;
   primaryContactEmail: string;
   primaryContactPhone: string;
+  /** Domain half of an employee's login email (E000001@<this>) - set
+   * explicitly here rather than derived from companyName, since a
+   * legal company name (e.g. "ABC Solutions Ltd.") has no unambiguous
+   * slug. Required before Onboard can provision an employee login. */
+  emailDomain: string;
 }
 
 /** Sponsor Licence Number and Sponsor Name (Settings > Sponsorship) -

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import type { PoolClient } from "pg";
 import { withTenant } from "../db";
 import type {
@@ -430,8 +430,14 @@ export class LeaveService {
    * no way to be undone short of it never having been persisted at
    * all. Approved/rejected requests are left alone; cancelling those
    * would need its own audit trail (and, for an approved one, undoing
-   * the attendance rows written above) which is out of scope here. */
-  async cancelLeaveRequest(tenantId: string, id: string): Promise<LeaveRequestDto> {
+   * the attendance rows written above) which is out of scope here.
+   *
+   * `requesterEmployeeId` is passed for an employee-role session
+   * cancelling their own request - checked against the row actually
+   * fetched here (not just the id in the URL), so there's no gap
+   * between "whose request is this" and "did we check that". Left
+   * undefined for an hr_admin session, which can cancel anyone's. */
+  async cancelLeaveRequest(tenantId: string, id: string, requesterEmployeeId?: string): Promise<LeaveRequestDto> {
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
         `SELECT lr.*, lt.name AS leave_type_name FROM leave.leave_request lr
@@ -439,6 +445,9 @@ export class LeaveService {
         [id]
       );
       if (!existing.rowCount) throw new NotFoundException("Leave request not found.");
+      if (requesterEmployeeId && existing.rows[0].employee_id !== requesterEmployeeId) {
+        throw new UnauthorizedException("You can only cancel your own leave requests.");
+      }
       if (existing.rows[0].status !== "pending") {
         throw new BadRequestException(`Only a pending request can be cancelled (this one is ${existing.rows[0].status}).`);
       }

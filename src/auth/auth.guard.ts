@@ -5,6 +5,8 @@ import * as jwt from "jsonwebtoken";
 export interface AuthenticatedUser {
   userId: string;
   tenantId: string;
+  role: "hr_admin" | "employee";
+  employeeId: string | null;
 }
 
 // Express augmentation so req.user is typed at every call site, rather
@@ -17,11 +19,9 @@ declare module "express" {
 
 /**
  * Validates the uvc_session cookie (the same JWT issued by
- * AuthService.login) and attaches { userId, tenantId } to the request.
- * This guard did not exist anywhere in the codebase before this work -
- * login previously only issued a token; nothing validated it on
- * subsequent requests. Apply with @UseGuards(AuthGuard) on any
- * controller that should require a signed-in session.
+ * AuthService.login) and attaches { userId, tenantId, role, employeeId }
+ * to the request. Apply with @UseGuards(AuthGuard) on any controller
+ * that should require a signed-in session.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -39,11 +39,53 @@ export class AuthGuard implements CanActivate {
     }
 
     try {
-      const payload = jwt.verify(token, this.jwtSecret) as { userId: string; tenantId: string };
-      req.user = { userId: payload.userId, tenantId: payload.tenantId };
+      const payload = jwt.verify(token, this.jwtSecret) as {
+        userId: string;
+        tenantId: string;
+        role?: "hr_admin" | "employee";
+        employeeId?: string | null;
+      };
+      // role/employeeId are absent on tokens issued before this change
+      // (still valid until they expire, max 15 minutes out) - treat
+      // those as hr_admin, matching every session that existed before
+      // employee logins did.
+      req.user = {
+        userId: payload.userId,
+        tenantId: payload.tenantId,
+        role: payload.role ?? "hr_admin",
+        employeeId: payload.employeeId ?? null,
+      };
       return true;
     } catch {
       throw new UnauthorizedException("Session expired or invalid.");
     }
+  }
+}
+
+/** Throws if an employee-role session is trying to touch a record that
+ * isn't their own. hr_admin sessions are never restricted by this -
+ * call it at the top of any attendance/leave handler that takes a
+ * target employeeId, before any data access happens. */
+export function assertSelfOrHrAdmin(user: AuthenticatedUser, targetEmployeeId: string) {
+  if (user.role === "hr_admin") return;
+  if (user.employeeId !== targetEmployeeId) {
+    throw new UnauthorizedException("You can only access your own records.");
+  }
+}
+
+/** Everything that isn't Attendance or Leave (Employees, Compliance,
+ * Settings, Payslip, ...) is HR-only - an employee-role session has no
+ * legitimate reason to hit any of it, including read-only endpoints
+ * like listing every employee. Apply alongside AuthGuard:
+ * @UseGuards(AuthGuard, HrAdminGuard). Must run after AuthGuard (Nest
+ * evaluates in array order) so req.user is already populated. */
+@Injectable()
+export class HrAdminGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const req = context.switchToHttp().getRequest<Request>();
+    if (req.user?.role !== "hr_admin") {
+      throw new UnauthorizedException("This area is only available to HR/admin users.");
+    }
+    return true;
   }
 }
