@@ -690,8 +690,34 @@ export class EmployeeService {
    * (employee_id_label, E000001...) is generated - it doesn't exist
    * before this point, matching how Candidate ID is generated once on
    * create() rather than editable at any point. */
+  /** Not safe to call twice with different outcomes each time -
+   * without this check, a second call (a fast double-click, a retried
+   * request) would mint a brand-new employee_id_label via
+   * nextSequenceNumber and overwrite the real one, and since the
+   * login email is built from that label, it would also silently
+   * leave behind an orphaned credential under the old email that no
+   * longer matches anything. So this is idempotent: once
+   * is_onboarded is true, every further call just returns the
+   * existing state - no new sequence number, no second credential
+   * provisioning attempt. `FOR UPDATE` closes the race where two
+   * concurrent onboard calls both read is_onboarded=false before
+   * either has written true. */
   async onboardEmployee(tenantId: string, id: string): Promise<{ id: string; isOnboarded: boolean; employeeId: string }> {
     const result = await withTenant(tenantId, async (client) => {
+      const existing = await client.query(
+        "SELECT is_onboarded, employee_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted FOR UPDATE",
+        [id]
+      );
+      if (!existing.rowCount) throw new NotFoundException("Employee not found.");
+      if (existing.rows[0].is_onboarded) {
+        return {
+          id,
+          isOnboarded: true,
+          employeeId: existing.rows[0].employee_id_label,
+          emailDomain: null, // already provisioned (or deliberately not) - see comment above, this call never (re-)provisions.
+        };
+      }
+
       const employeeIdLabel = await nextSequenceNumber(client, tenantId, "employee_number", "E", 6);
       const updateRes = await client.query(
         "UPDATE employee.employee_master SET is_onboarded = true, employee_id_label = $1, updated_at = now() WHERE id = $2 AND NOT is_deleted RETURNING id, is_onboarded, employee_id_label",
@@ -720,12 +746,10 @@ export class EmployeeService {
     // Standards, Section 4.6), so it's a genuinely separate write, not
     // part of the same atomic unit. If Employer Settings hasn't had an
     // email domain configured yet, onboarding still succeeds - the
-    // employee just doesn't get a login credential. Re-running this
-    // endpoint is NOT a safe way to backfill one afterwards (it would
-    // mint a second, different employee_id_label via
-    // nextSequenceNumber and overwrite the real one) - a dedicated
-    // "create login for this employee" action is needed for that case,
-    // out of scope here.
+    // employee just doesn't get a login credential, and (per the
+    // idempotency guard above) simply calling onboard again is NOT how
+    // to fix that after the fact - a dedicated "create login for this
+    // employee" action is needed for that case, out of scope here.
     if (result.emailDomain) {
       const email = `${result.employeeId}@${result.emailDomain}`;
       await this.authService.createEmployeeCredential(tenantId, result.id, email, result.employeeId);

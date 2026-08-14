@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 import * as jwt from "jsonwebtoken";
 
@@ -65,11 +65,15 @@ export class AuthGuard implements CanActivate {
 /** Throws if an employee-role session is trying to touch a record that
  * isn't their own. hr_admin sessions are never restricted by this -
  * call it at the top of any attendance/leave handler that takes a
- * target employeeId, before any data access happens. */
+ * target employeeId, before any data access happens. 403, not 401 -
+ * the session itself is perfectly valid, it just isn't permitted this
+ * particular record; a 401 here would be wrong (and could trip a
+ * generic "401 -> log out" interceptor into signing out someone who
+ * did nothing wrong). */
 export function assertSelfOrHrAdmin(user: AuthenticatedUser, targetEmployeeId: string) {
   if (user.role === "hr_admin") return;
   if (user.employeeId !== targetEmployeeId) {
-    throw new UnauthorizedException("You can only access your own records.");
+    throw new ForbiddenException("You can only access your own records.");
   }
 }
 
@@ -78,13 +82,14 @@ export function assertSelfOrHrAdmin(user: AuthenticatedUser, targetEmployeeId: s
  * legitimate reason to hit any of it, including read-only endpoints
  * like listing every employee. Apply alongside AuthGuard:
  * @UseGuards(AuthGuard, HrAdminGuard). Must run after AuthGuard (Nest
- * evaluates in array order) so req.user is already populated. */
+ * evaluates in array order) so req.user is already populated. 403, not
+ * 401 - see assertSelfOrHrAdmin's comment above, same reasoning. */
 @Injectable()
 export class HrAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     if (req.user?.role !== "hr_admin") {
-      throw new UnauthorizedException("This area is only available to HR/admin users.");
+      throw new ForbiddenException("This area is only available to HR/admin users.");
     }
     return true;
   }

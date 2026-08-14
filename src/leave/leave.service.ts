@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import type { PoolClient } from "pg";
 import { withTenant } from "../db";
 import type {
@@ -446,7 +446,7 @@ export class LeaveService {
       );
       if (!existing.rowCount) throw new NotFoundException("Leave request not found.");
       if (requesterEmployeeId && existing.rows[0].employee_id !== requesterEmployeeId) {
-        throw new UnauthorizedException("You can only cancel your own leave requests.");
+        throw new ForbiddenException("You can only cancel your own leave requests.");
       }
       if (existing.rows[0].status !== "pending") {
         throw new BadRequestException(`Only a pending request can be cancelled (this one is ${existing.rows[0].status}).`);

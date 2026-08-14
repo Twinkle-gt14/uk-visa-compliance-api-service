@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import * as XLSX from "xlsx";
 import { withTenant } from "../db";
 import { parseAppendixTable, parseHealthcarePayBands, parseEducationPayScales } from "./appendix-parser";
@@ -987,7 +987,7 @@ export class ComplianceService {
       if (!docResult.rowCount) throw new NotFoundException("Document not found.");
       const doc = docResult.rows[0];
       if (requesterEmployeeId && doc.employee_id !== requesterEmployeeId) {
-        throw new UnauthorizedException("You can only manage your own documents.");
+        throw new ForbiddenException("You can only manage your own documents.");
       }
 
       const verified = await verifyUploadedObject(doc.storage_key);
@@ -1026,7 +1026,7 @@ export class ComplianceService {
       );
       if (!result.rowCount) throw new NotFoundException("Document not found.");
       if (requesterEmployeeId && result.rows[0].employee_id !== requesterEmployeeId) {
-        throw new UnauthorizedException("You can only download your own documents.");
+        throw new ForbiddenException("You can only download your own documents.");
       }
       const url = await getSignedDownloadUrl(result.rows[0].storage_key);
       return { url, filename: result.rows[0].original_filename };
@@ -1042,7 +1042,7 @@ export class ComplianceService {
         );
         if (!owner.rowCount) throw new NotFoundException("Document not found.");
         if (owner.rows[0].employee_id !== requesterEmployeeId) {
-          throw new UnauthorizedException("You can only delete your own documents.");
+          throw new ForbiddenException("You can only delete your own documents.");
         }
       }
       const result = await client.query(
