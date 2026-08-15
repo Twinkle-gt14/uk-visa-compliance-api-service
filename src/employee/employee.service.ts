@@ -354,6 +354,7 @@ export class EmployeeService {
         contractDuration: m.contract_duration ?? "",
         currentLocation: m.current_location ?? "",
         currentImmigrationStatus: m.current_immigration_status ?? "",
+        rtwEngagementType: m.rtw_engagement_type ?? "",
         proposedAnnualSalary: m.proposed_annual_salary != null ? String(m.proposed_annual_salary) : "",
         jobContractFileName: m.job_contract_file_reference,
         sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
@@ -401,9 +402,16 @@ export class EmployeeService {
 
         rtwChecks: rtw.rows.map((r): RtwCheckEntryDto => ({
           id: r.id, checkMethod: r.check_method, documentEvidenceType: r.document_evidence_type,
+          documentType: r.document_type, documentExpiryDate: toDateStr(r.document_expiry_date),
+          pvnDate: toDateStr(r.pvn_date),
           shareCode: r.share_code, rtwReference: r.rtw_reference,
+          onlineCodeIssuedDate: toDateStr(r.online_code_issued_date),
+          onlinePermissionLimit: r.online_permission_limit, onlineExpiryDate: toDateStr(r.online_expiry_date),
+          idspProvider: r.idsp_provider,
           checkedByName: r.checked_by_name, checkedByRole: r.checked_by_role,
-          dateOfCheck: toDateStr(r.date_of_check), statutoryExcuseEstablished: r.statutory_excuse_established,
+          dateOfCheck: toDateStr(r.date_of_check),
+          photoMatchConfirmed: !!r.photo_match_confirmed, knownReasonableCauseFlag: !!r.known_reasonable_cause_flag,
+          statutoryExcuseEstablished: r.statutory_excuse_established,
           status: r.status, expiryDate: toDateStr(r.expiry_date), remarks: r.remarks,
           attachmentFileName: r.attachment_file_reference,
         })),
@@ -476,8 +484,8 @@ export class EmployeeService {
              project_work_branch=$17, sponsored_employee=$18, british_employee=$19, job_contract_file_reference=$20,
              date_of_joining=$21, reporting_manager_name=$22, photo_file_reference=$23, hourly_rate=$24,
              job_description=$25, contract_duration=$26, current_location=$27, current_immigration_status=$28,
-             proposed_annual_salary=$29, record_status='Active', updated_at=now()
-           WHERE id=$30`,
+             proposed_annual_salary=$29, rtw_engagement_type=$30, record_status='Active', updated_at=now()
+           WHERE id=$31`,
           [
             dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
             dto.gender || null, dto.maritalStatus || null, dto.nationality || null, niEncrypted, niHash,
@@ -489,6 +497,7 @@ export class EmployeeService {
             dto.hourlyRate ? Number(dto.hourlyRate) : null,
             dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
+            dto.rtwEngagementType || null,
             id,
           ]
         );
@@ -634,6 +643,7 @@ export class EmployeeService {
       if (dto.contractDuration !== undefined) set("contract_duration", dto.contractDuration || null);
       if (dto.currentLocation !== undefined) set("current_location", dto.currentLocation || null);
       if (dto.currentImmigrationStatus !== undefined) set("current_immigration_status", dto.currentImmigrationStatus || null);
+      if (dto.rtwEngagementType !== undefined) set("rtw_engagement_type", dto.rtwEngagementType || null);
       if (dto.proposedAnnualSalary !== undefined) set("proposed_annual_salary", dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null);
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
@@ -890,14 +900,21 @@ export class EmployeeService {
       for (const r of dto.rtwChecks) {
         await client.query(
           `INSERT INTO employee.employee_rtw_check
-             (tenant_id, employee_id, check_method, document_evidence_type, share_code, rtw_reference,
-              checked_by_name, checked_by_role, date_of_check, statutory_excuse_established, status,
+             (tenant_id, employee_id, check_method, document_evidence_type, document_type, document_expiry_date,
+              pvn_date, share_code, rtw_reference, online_code_issued_date, online_permission_limit,
+              online_expiry_date, idsp_provider, checked_by_name, checked_by_role, date_of_check,
+              photo_match_confirmed, known_reasonable_cause_flag, statutory_excuse_established, status,
               expiry_date, remarks, attachment_file_reference)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
           [
             tenantId, employeeId, r.checkMethod || null, r.documentEvidenceType || null,
-            r.shareCode || null, r.rtwReference || null, r.checkedByName || null, r.checkedByRole || null,
-            r.dateOfCheck || null, r.statutoryExcuseEstablished || null, r.status || null,
+            r.documentType || null, r.documentExpiryDate || null,
+            r.pvnDate || null, r.shareCode || null, r.rtwReference || null,
+            r.onlineCodeIssuedDate || null, r.onlinePermissionLimit || null,
+            r.onlineExpiryDate || null, r.idspProvider || null,
+            r.checkedByName || null, r.checkedByRole || null,
+            r.dateOfCheck || null, !!r.photoMatchConfirmed, !!r.knownReasonableCauseFlag,
+            r.statutoryExcuseEstablished || null, r.status || null,
             r.expiryDate || null, r.remarks || null, r.attachmentFileName || null,
           ]
         );

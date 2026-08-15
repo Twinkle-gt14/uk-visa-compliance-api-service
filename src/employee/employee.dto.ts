@@ -54,11 +54,20 @@ export interface RtwCheckEntryDto {
   id?: string;
   checkMethod?: string;
   documentEvidenceType?: string;
+  documentType?: string;
+  documentExpiryDate?: string;
+  pvnDate?: string;
   shareCode?: string;
   rtwReference?: string;
+  onlineCodeIssuedDate?: string;
+  onlinePermissionLimit?: string;
+  onlineExpiryDate?: string;
+  idspProvider?: string;
   checkedByName?: string;
   checkedByRole?: string;
   dateOfCheck?: string;
+  photoMatchConfirmed?: boolean;
+  knownReasonableCauseFlag?: boolean;
   statutoryExcuseEstablished?: string;
   status?: string;
   expiryDate?: string;
@@ -170,6 +179,10 @@ export interface EmployeeUpsertDto {  // Personal
 
   // Right to work (repeatable)
   rtwChecks?: RtwCheckEntryDto[];
+  /** Property of the working relationship, not any one check - see
+   * migration 025's comment on why this lives on employee_master
+   * rather than being repeated per RtwCheckEntryDto. */
+  rtwEngagementType?: string;
 
   // Dependants linked to the visa (repeatable)
   dependants?: DependantEntryDto[];
