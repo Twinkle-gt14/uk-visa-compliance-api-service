@@ -1,4 +1,4 @@
-export type SkilledWorkerStatus = "Eligible" | "Not Eligible" | "Conditional" | "Transitional" | "Not Mapped";
+export type SkilledWorkerStatus = "Eligible" | "Not Eligible" | "Conditional" | "Not Mapped";
 export type ImportBatchStatus = "Pending Review" | "Approved" | "Cancelled";
 export type ImportOutcome = "Matched" | "Not Matched" | "Duplicate" | "Invalid";
 
@@ -24,7 +24,7 @@ export interface SkilledWorkerSummaryCountsDto {
   notMapped: number;
   eligible: number;
   notEligible: number;
-  conditionalOrTransitional: number;
+  conditional: number;
 }
 
 export interface SkilledWorkerRuleDto {

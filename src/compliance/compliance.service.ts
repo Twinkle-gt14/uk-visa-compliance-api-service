@@ -59,13 +59,13 @@ const GOV_UK_SOURCE_URL = "https://www.gov.uk/guidance/immigration-rules/immigra
  */
 const RULE_SHEETS: { sheet: string; sourceTable: string; status: SkilledWorkerRuleDto["status"] }[] = [
   { sheet: "Table_1", sourceTable: "Table 1", status: "Eligible" },
-  { sheet: "Table_1a", sourceTable: "Table 1a", status: "Transitional" },
+  { sheet: "Table_1a", sourceTable: "Table 1a", status: "Conditional" },
   { sheet: "Table_2", sourceTable: "Table 2", status: "Eligible" },
-  { sheet: "Table_2aa", sourceTable: "Table 2aa", status: "Transitional" },
-  { sheet: "Table_2a", sourceTable: "Table 2a", status: "Transitional" },
+  { sheet: "Table_2aa", sourceTable: "Table 2aa", status: "Conditional" },
+  { sheet: "Table_2a", sourceTable: "Table 2a", status: "Conditional" },
   { sheet: "Table_2b", sourceTable: "Table 2b", status: "Not Eligible" },
   { sheet: "Table_3", sourceTable: "Table 3", status: "Eligible" },
-  { sheet: "Table_3a", sourceTable: "Table 3a", status: "Transitional" },
+  { sheet: "Table_3a", sourceTable: "Table 3a", status: "Conditional" },
   { sheet: "Table_6", sourceTable: "Table 6", status: "Not Eligible" },
 ];
 
@@ -235,7 +235,7 @@ export class ComplianceService {
         count(*) FILTER (WHERE id IS NULL)::int AS not_mapped,
         count(*) FILTER (WHERE status = 'Eligible')::int AS eligible,
         count(*) FILTER (WHERE status = 'Not Eligible')::int AS not_eligible,
-        count(*) FILTER (WHERE status IN ('Conditional', 'Transitional'))::int AS conditional_or_transitional
+        count(*) FILTER (WHERE status = 'Conditional')::int AS conditional
       FROM ranked
     `);
     const r = result.rows[0];
@@ -245,7 +245,7 @@ export class ComplianceService {
       notMapped: r.not_mapped,
       eligible: r.eligible,
       notEligible: r.not_eligible,
-      conditionalOrTransitional: r.conditional_or_transitional,
+      conditional: r.conditional,
     };
   }
 
