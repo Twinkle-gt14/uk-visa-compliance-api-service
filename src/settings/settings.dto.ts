@@ -1,4 +1,4 @@
-export type SimpleReferenceKind = "department" | "position" | "visa_type" | "work_location";
+export type SimpleReferenceKind = "department" | "role" | "visa_type" | "work_location";
 
 export interface SimpleReferenceItemDto {
   id: string;
@@ -71,9 +71,9 @@ export interface WorkLocationDto {
 }
 
 /** Job title (`name`) plus the full role profile Candidate
- * Onboarding's Role Details step displays once a position is picked
- * from the dropdown there - see migration 026. */
-export interface PositionDto {
+ * Onboarding's Role Details step displays once a role is picked
+ * from the dropdown there - see migrations 026 and 027. */
+export interface RoleDto {
   id: string;
   name: string;
   workLocation: string | null;
@@ -82,6 +82,7 @@ export interface PositionDto {
   salaryRange: string | null;
   reportingLine: string | null;
   businessJustification: string | null;
+  weeklyWorkingHours: string | null;
 }
 
 export interface Soc2020CodeDto {

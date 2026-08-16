@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard, HrAdminGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
-import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto, PositionDto } from "./settings.dto";
+import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto, RoleDto } from "./settings.dto";
 
 @Controller("settings")
 @UseGuards(AuthGuard, HrAdminGuard)
@@ -16,11 +16,11 @@ export class SettingsController {
   @Patch("departments/:id") updateDepartment(@Req() req: Request, @Param("id") id: string, @Body() body: { name: string }) { return this.settingsService.updateSimple(req.user!.tenantId, "department", id, body.name); }
   @Delete("departments/:id") deleteDepartment(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "department", id); }
 
-  // --- Position ---
-  @Get("positions") listPositions(@Req() req: Request) { return this.settingsService.listPositions(req.user!.tenantId); }
-  @Post("positions") createPosition(@Req() req: Request, @Body() body: Partial<PositionDto> & { name: string }) { return this.settingsService.createPosition(req.user!.tenantId, body); }
-  @Patch("positions/:id") updatePosition(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<PositionDto> & { name: string }) { return this.settingsService.updatePosition(req.user!.tenantId, id, body); }
-  @Delete("positions/:id") deletePosition(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "position", id); }
+  // --- Role ---
+  @Get("roles") listRoles(@Req() req: Request) { return this.settingsService.listRoles(req.user!.tenantId); }
+  @Post("roles") createRole(@Req() req: Request, @Body() body: Partial<RoleDto> & { name: string }) { return this.settingsService.createRole(req.user!.tenantId, body); }
+  @Patch("roles/:id") updateRole(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<RoleDto> & { name: string }) { return this.settingsService.updateRole(req.user!.tenantId, id, body); }
+  @Delete("roles/:id") deleteRole(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "role", id); }
 
   // --- Visa Type ---
   @Get("visa-types") listVisaTypes(@Req() req: Request) { return this.settingsService.listSimple(req.user!.tenantId, "visa_type"); }
