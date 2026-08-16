@@ -70,6 +70,20 @@ export interface WorkLocationDto {
   jurisdictionName: string | null;
 }
 
+/** Job title (`name`) plus the full role profile Candidate
+ * Onboarding's Role Details step displays once a position is picked
+ * from the dropdown there - see migration 026. */
+export interface PositionDto {
+  id: string;
+  name: string;
+  workLocation: string | null;
+  mainDuties: string | null;
+  requiredSkills: string | null;
+  salaryRange: string | null;
+  reportingLine: string | null;
+  businessJustification: string | null;
+}
+
 export interface Soc2020CodeDto {
   id: string;
   socCode: string;

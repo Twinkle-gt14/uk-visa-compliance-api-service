@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard, HrAdminGuard } from "../auth/auth.guard";
 import { SettingsService } from "./settings.service";
-import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto } from "./settings.dto";
+import type { CreateHolidayDto, EmployerProfileDto, SponsorshipProfileDto, UpdateHolidayDto, PositionDto } from "./settings.dto";
 
 @Controller("settings")
 @UseGuards(AuthGuard, HrAdminGuard)
@@ -17,9 +17,9 @@ export class SettingsController {
   @Delete("departments/:id") deleteDepartment(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "department", id); }
 
   // --- Position ---
-  @Get("positions") listPositions(@Req() req: Request) { return this.settingsService.listSimple(req.user!.tenantId, "position"); }
-  @Post("positions") createPosition(@Req() req: Request, @Body() body: { name: string }) { return this.settingsService.createSimple(req.user!.tenantId, "position", body.name); }
-  @Patch("positions/:id") updatePosition(@Req() req: Request, @Param("id") id: string, @Body() body: { name: string }) { return this.settingsService.updateSimple(req.user!.tenantId, "position", id, body.name); }
+  @Get("positions") listPositions(@Req() req: Request) { return this.settingsService.listPositions(req.user!.tenantId); }
+  @Post("positions") createPosition(@Req() req: Request, @Body() body: Partial<PositionDto> & { name: string }) { return this.settingsService.createPosition(req.user!.tenantId, body); }
+  @Patch("positions/:id") updatePosition(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<PositionDto> & { name: string }) { return this.settingsService.updatePosition(req.user!.tenantId, id, body); }
   @Delete("positions/:id") deletePosition(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteSimple(req.user!.tenantId, "position", id); }
 
   // --- Visa Type ---

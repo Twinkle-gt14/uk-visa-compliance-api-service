@@ -10,6 +10,7 @@ import type {
   Soc2020CodeDto,
   JurisdictionDto,
   WorkLocationDto,
+  PositionDto,
 } from "./settings.dto";
 
 /** Maps each kind to its real table name via a fixed whitelist (not
@@ -57,6 +58,19 @@ function rowToSponsorshipProfile(r: any): SponsorshipProfileDto {
     companyName: r.company_name ?? "",
     sponsorLicenceNumber: r.sponsor_licence_number ?? "",
     sponsorName: r.sponsor_name ?? "",
+  };
+}
+
+function rowToPosition(r: any): PositionDto {
+  return {
+    id: r.id,
+    name: r.name,
+    workLocation: r.work_location,
+    mainDuties: r.main_duties,
+    requiredSkills: r.required_skills,
+    salaryRange: r.salary_range,
+    reportingLine: r.reporting_line,
+    businessJustification: r.business_justification,
   };
 }
 
@@ -190,6 +204,65 @@ export class SettingsService {
         return { id: r.id, name: r.name, jurisdictionId: r.jurisdiction_id, jurisdictionName };
       } catch (err: any) {
         if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  // --- Position (dedicated, not the generic listSimple/createSimple/
+  // updateSimple, since it now carries a full role profile alongside
+  // its name - see migration 026) ---
+  async listPositions(tenantId: string): Promise<PositionDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification
+         FROM reference.position ORDER BY name`
+      );
+      return result.rows.map(rowToPosition);
+    });
+  }
+
+  async createPosition(tenantId: string, dto: Partial<PositionDto> & { name: string }): Promise<PositionDto> {
+    if (!dto.name?.trim()) throw new BadRequestException("Job title is required.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `INSERT INTO reference.position
+             (tenant_id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification`,
+          [
+            tenantId, dto.name.trim(), dto.workLocation || null, dto.mainDuties || null,
+            dto.requiredSkills || null, dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null,
+          ]
+        );
+        return rowToPosition(result.rows[0]);
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${dto.name!.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  async updatePosition(tenantId: string, id: string, dto: Partial<PositionDto> & { name: string }): Promise<PositionDto> {
+    if (!dto.name?.trim()) throw new BadRequestException("Job title is required.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `UPDATE reference.position SET
+             name = $1, work_location = $2, main_duties = $3, required_skills = $4,
+             salary_range = $5, reporting_line = $6, business_justification = $7
+           WHERE id = $8
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification`,
+          [
+            dto.name.trim(), dto.workLocation || null, dto.mainDuties || null, dto.requiredSkills || null,
+            dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null, id,
+          ]
+        );
+        if (!result.rowCount) throw new NotFoundException("Not found.");
+        return rowToPosition(result.rows[0]);
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${dto.name!.trim()}" already exists.`);
         throw err;
       }
     });
