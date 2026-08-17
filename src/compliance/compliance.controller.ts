@@ -147,6 +147,24 @@ export class ComplianceController {
     return this.complianceService.requestDocumentUpload(req.user!.tenantId, employeeId, req.user!.userId, body);
   }
 
+  // --- Role-scoped documents (Settings > Role advertisement evidence)
+  // - HR-admin only, since Roles are settings-level master data, not
+  // something an employee session has any business touching. Shares
+  // the generic confirm/download-url/delete endpoints below with
+  // employee documents, since those only need a document id. ---
+
+  @Post("role-documents/:roleId/request-upload")
+  @UseGuards(HrAdminGuard)
+  requestRoleDocumentUpload(@Req() req: Request, @Param("roleId") roleId: string, @Body() body: RequestUploadDto) {
+    return this.complianceService.requestRoleDocumentUpload(req.user!.tenantId, roleId, req.user!.userId, body);
+  }
+
+  @Get("role-documents/:roleId")
+  @UseGuards(HrAdminGuard)
+  listRoleDocuments(@Req() req: Request, @Param("roleId") roleId: string) {
+    return this.complianceService.listRoleDocuments(req.user!.tenantId, roleId);
+  }
+
   @Post("documents/:documentId/confirm")
   confirmDocumentUpload(@Req() req: Request, @Param("documentId") documentId: string) {
     const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;

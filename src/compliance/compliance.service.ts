@@ -7,6 +7,7 @@ import {
   ALLOWED_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
   buildStorageKey,
+  buildRoleStorageKey,
   getSignedUploadUrl,
   getSignedDownloadUrl,
   verifyUploadedObject,
@@ -930,6 +931,7 @@ export class ComplianceService {
     return {
       id: r.id,
       employeeId: r.employee_id,
+      roleId: r.role_id,
       documentType: r.document_type,
       description: r.description,
       originalFilename: r.original_filename,
@@ -1013,6 +1015,54 @@ export class ComplianceService {
          WHERE employee_id = $1 AND deleted_at IS NULL AND status != 'Failed'
          ORDER BY created_at DESC`,
         [employeeId]
+      );
+      return result.rows.map(ComplianceService.rowToDocumentDto);
+    });
+  }
+
+  // --- Role-scoped documents (e.g. Settings > Role advertisement
+  // evidence) - same storage table and upload/confirm/download/delete
+  // flow as employee documents, just keyed by role_id instead of
+  // employee_id (see migration 030's single-owner CHECK constraint).
+  // HR-admin only at the controller level - Roles are settings-level
+  // master data, not something an employee session ever touches. ---
+
+  async requestRoleDocumentUpload(tenantId: string, roleId: string, userId: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
+    if (!ALLOWED_CONTENT_TYPES.has(dto.contentType)) {
+      throw new BadRequestException(`File type "${dto.contentType}" isn't allowed. Allowed types: PDF, JPG, PNG, DOCX.`);
+    }
+    if (dto.sizeBytes > MAX_UPLOAD_BYTES) {
+      throw new BadRequestException(`File is too large - the limit is ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.`);
+    }
+    if (!dto.documentType?.trim()) throw new BadRequestException("Document type is required.");
+
+    return withTenant(tenantId, async (client) => {
+      const roleExists = await client.query("SELECT 1 FROM reference.role WHERE id = $1", [roleId]);
+      if (!roleExists.rowCount) throw new NotFoundException("Role not found.");
+
+      const uuid = randomUUID();
+      const storageKey = buildRoleStorageKey(tenantId, roleId, uuid, dto.filename);
+
+      const result = await client.query(
+        `INSERT INTO compliance.supporting_document
+          (tenant_id, role_id, document_type, description, original_filename, storage_key, content_type, size_bytes, status, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Pending',$9)
+         RETURNING id`,
+        [tenantId, roleId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, userId || null]
+      );
+
+      const uploadUrl = await getSignedUploadUrl(storageKey, dto.contentType);
+      return { documentId: result.rows[0].id, uploadUrl };
+    });
+  }
+
+  async listRoleDocuments(tenantId: string, roleId: string): Promise<SupportingDocumentDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT * FROM compliance.supporting_document
+         WHERE role_id = $1 AND deleted_at IS NULL AND status != 'Failed'
+         ORDER BY created_at DESC`,
+        [roleId]
       );
       return result.rows.map(ComplianceService.rowToDocumentDto);
     });

@@ -215,7 +215,10 @@ export type DocumentStatus = "Pending" | "Uploaded" | "Failed" | "Deleted";
 
 export interface SupportingDocumentDto {
   id: string;
-  employeeId: string;
+  /** Exactly one of these is set - see the DB's
+   * chk_supporting_document_single_owner constraint. */
+  employeeId: string | null;
+  roleId: string | null;
   documentType: string;
   description: string | null;
   originalFilename: string;

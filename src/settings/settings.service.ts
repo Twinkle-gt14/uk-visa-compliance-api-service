@@ -72,6 +72,7 @@ function rowToRole(r: any): RoleDto {
     reportingLine: r.reporting_line,
     businessJustification: r.business_justification,
     weeklyWorkingHours: r.weekly_working_hours,
+    advertised: r.advertised,
   };
 }
 
@@ -216,7 +217,7 @@ export class SettingsService {
   async listRoles(tenantId: string): Promise<RoleDto[]> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
-        `SELECT id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours
+        `SELECT id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised
          FROM reference.role ORDER BY name`
       );
       return result.rows.map(rowToRole);
@@ -229,13 +230,13 @@ export class SettingsService {
       try {
         const result = await client.query(
           `INSERT INTO reference.role
-             (tenant_id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours`,
+             (tenant_id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised`,
           [
             tenantId, dto.name.trim(), dto.workLocation || null, dto.mainDuties || null,
             dto.requiredSkills || null, dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null,
-            dto.weeklyWorkingHours || null,
+            dto.weeklyWorkingHours || null, dto.advertised || null,
           ]
         );
         return rowToRole(result.rows[0]);
@@ -253,13 +254,13 @@ export class SettingsService {
         const result = await client.query(
           `UPDATE reference.role SET
              name = $1, work_location = $2, main_duties = $3, required_skills = $4,
-             salary_range = $5, reporting_line = $6, business_justification = $7, weekly_working_hours = $8
-           WHERE id = $9
-           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours`,
+             salary_range = $5, reporting_line = $6, business_justification = $7, weekly_working_hours = $8, advertised = $9
+           WHERE id = $10
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised`,
           [
             dto.name.trim(), dto.workLocation || null, dto.mainDuties || null, dto.requiredSkills || null,
             dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null,
-            dto.weeklyWorkingHours || null, id,
+            dto.weeklyWorkingHours || null, dto.advertised || null, id,
           ]
         );
         if (!result.rowCount) throw new NotFoundException("Not found.");

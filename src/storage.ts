@@ -32,6 +32,10 @@ export function buildStorageKey(tenantId: string, employeeId: string, uuid: stri
   return `tenants/${tenantId}/employees/${employeeId}/documents/${uuid}-${sanitizeFilename(filename)}`;
 }
 
+export function buildRoleStorageKey(tenantId: string, roleId: string, uuid: string, filename: string): string {
+  return `tenants/${tenantId}/roles/${roleId}/documents/${uuid}-${sanitizeFilename(filename)}`;
+}
+
 export async function getSignedUploadUrl(storageKey: string, contentType: string): Promise<string> {
   assertStorageConfigured();
   const [url] = await storage

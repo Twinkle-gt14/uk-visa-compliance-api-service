@@ -83,6 +83,7 @@ export interface RoleDto {
   reportingLine: string | null;
   businessJustification: string | null;
   weeklyWorkingHours: string | null;
+  advertised: string | null;
 }
 
 export interface Soc2020CodeDto {
