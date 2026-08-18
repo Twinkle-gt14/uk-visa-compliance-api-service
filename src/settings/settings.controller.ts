@@ -59,4 +59,16 @@ export class SettingsController {
     if (!file) throw new BadRequestException("No file was uploaded.");
     return this.settingsService.uploadSoc2020(req.user!.tenantId, file.buffer);
   }
+
+  // --- Pre-Employment Validation Rules ---
+  @Get("pre-employment-validation") listPreEmploymentValidationRules(@Req() req: Request) {
+    return this.settingsService.listPreEmploymentValidationRules(req.user!.tenantId);
+  }
+
+  @Post("pre-employment-validation/upload")
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
+  uploadPreEmploymentValidationRules(@Req() req: Request, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException("No file was uploaded.");
+    return this.settingsService.uploadPreEmploymentValidationRules(req.user!.tenantId, file.buffer);
+  }
 }

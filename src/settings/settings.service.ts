@@ -8,6 +8,7 @@ import type {
   EmployerProfileDto,
   SponsorshipProfileDto,
   Soc2020CodeDto,
+  PreEmploymentValidationRuleDto,
   JurisdictionDto,
   WorkLocationDto,
   RoleDto,
@@ -524,6 +525,85 @@ export class SettingsService {
             r.soc_group_title != null ? String(r.soc_group_title) : null,
             r.change != null ? String(r.change) : null,
             r.verno != null ? String(r.verno) : null,
+          ]
+        );
+      }
+      return { imported: validRows.length };
+    });
+  }
+
+  // --- Pre-Employment Validation Rules ---
+
+  async listPreEmploymentValidationRules(tenantId: string): Promise<PreEmploymentValidationRuleDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, category, rule_id, checkpoint, consequence, source
+         FROM reference.pre_employment_validation_rule
+         ORDER BY category, rule_id`
+      );
+      return result.rows.map((r) => ({
+        id: r.id,
+        category: r.category ?? "",
+        ruleId: r.rule_id ?? "",
+        checkpoint: r.checkpoint ?? "",
+        consequence: r.consequence ?? "",
+        source: r.source ?? "",
+      }));
+    });
+  }
+
+  /** Parses the master validation-rules Excel file and upserts every
+   * row keyed on (category, rule_id) - rule IDs repeat across
+   * categories (e.g. "R1" exists under both Role & Recruitment and
+   * Right to Work), so category+ruleId together is the natural key,
+   * not ruleId alone. Same "scan every sheet for the expected header"
+   * approach as uploadSoc2020, since a notes/README sheet may sit
+   * alongside the data sheet. */
+  async uploadPreEmploymentValidationRules(tenantId: string, fileBuffer: Buffer): Promise<{ imported: number }> {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: "buffer" });
+    } catch {
+      throw new BadRequestException("Couldn't read that file - is it a valid .xlsx spreadsheet?");
+    }
+
+    const REQUIRED_COLUMNS = ["Category", "Rule ID", "Checkpoint"];
+    let rows: Record<string, any>[] | null = null;
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const candidate = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: null });
+      if (candidate.length && REQUIRED_COLUMNS.every((col) => col in candidate[0])) {
+        rows = candidate;
+        break;
+      }
+    }
+    if (!rows) {
+      throw new BadRequestException(
+        `Couldn't find a sheet with the expected validation-rules columns (${REQUIRED_COLUMNS.join(", ")}).`
+      );
+    }
+
+    const validRows = rows.filter((r) => r.Category != null && String(r.Category).trim() !== "" && r["Rule ID"] != null && String(r["Rule ID"]).trim() !== "");
+    if (!validRows.length) {
+      throw new BadRequestException("No rows with both a Category and a Rule ID were found in that file.");
+    }
+
+    return withTenant(tenantId, async (client) => {
+      for (const r of validRows) {
+        await client.query(
+          `INSERT INTO reference.pre_employment_validation_rule
+            (tenant_id, category, rule_id, checkpoint, consequence, source)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (tenant_id, category, rule_id) DO UPDATE SET
+             checkpoint = EXCLUDED.checkpoint, consequence = EXCLUDED.consequence,
+             source = EXCLUDED.source, uploaded_at = now()`,
+          [
+            tenantId,
+            String(r.Category),
+            String(r["Rule ID"]),
+            r.Checkpoint != null ? String(r.Checkpoint) : null,
+            r["Consequence if non-compliant"] != null ? String(r["Consequence if non-compliant"]) : null,
+            r.Source != null ? String(r.Source) : null,
           ]
         );
       }

@@ -99,3 +99,12 @@ export interface Soc2020CodeDto {
   changeNote: string;
   verno: string;
 }
+
+export interface PreEmploymentValidationRuleDto {
+  id: string;
+  category: string;
+  ruleId: string;
+  checkpoint: string;
+  consequence: string;
+  source: string;
+}
