@@ -675,20 +675,32 @@ export class SettingsService {
       if (!sheet) continue;
 
       const raw: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
-      const headerRowIndex = raw.findIndex((row) => row[0] === "Compliance Area");
+      // A sheet may or may not have a leading "Type" column - Sponsored
+      // Workers gained one (Reporting Duties / Record Keeping Duties)
+      // while Non-Sponsored Employees kept the original 7-column
+      // layout, so every column read below is offset by whichever
+      // shape this particular sheet's header row turns out to be.
+      const headerRowIndex = raw.findIndex((row) => row[0] === "Type" || row[0] === "Compliance Area");
       if (headerRowIndex === -1) continue;
+      const hasTypeColumn = raw[headerRowIndex][0] === "Type";
+      const col = hasTypeColumn ? { area: 1, req: 2, trigger: 3, deadline: 4, action: 5, consequence: 6, source: 7 } : { area: 0, req: 1, trigger: 2, deadline: 3, action: 4, consequence: 5, source: 6 };
 
+      // Without a Type column, section still has to be tracked from
+      // section-header-only rows (numbered rows with just column A
+      // filled) - kept as a fallback for exactly that case.
       let currentSection: string | null = null;
       for (let i = headerRowIndex + 1; i < raw.length; i++) {
         const row = raw[i];
         if (!row || row.every((c) => c == null)) continue;
 
-        const complianceArea = row[0] != null ? String(row[0]).trim() : "";
-        const checkRequirement = row[1] != null ? String(row[1]).trim() : "";
+        const type = hasTypeColumn && row[0] != null ? String(row[0]).trim() : null;
+        const complianceArea = row[col.area] != null ? String(row[col.area]).trim() : "";
+        const checkRequirement = row[col.req] != null ? String(row[col.req]).trim() : "";
 
-        // A section-header row has text in column A only - everything
-        // else is empty.
-        if (complianceArea && !checkRequirement) {
+        // A section-header row has text in the Compliance Area column
+        // only - everything else (including Type, when present) is
+        // empty.
+        if (complianceArea && !checkRequirement && !type) {
           currentSection = complianceArea;
           continue;
         }
@@ -696,14 +708,14 @@ export class SettingsService {
 
         parsedRows.push({
           category,
-          section: currentSection,
+          section: type ?? currentSection,
           complianceArea,
           checkRequirement,
-          triggerEvent: row[2] != null ? String(row[2]) : null,
-          deadline: row[3] != null ? String(row[3]) : null,
-          actionWhereToReport: row[4] != null ? String(row[4]) : null,
-          consequence: row[5] != null ? String(row[5]) : null,
-          source: row[6] != null ? String(row[6]) : null,
+          triggerEvent: row[col.trigger] != null ? String(row[col.trigger]) : null,
+          deadline: row[col.deadline] != null ? String(row[col.deadline]) : null,
+          actionWhereToReport: row[col.action] != null ? String(row[col.action]) : null,
+          consequence: row[col.consequence] != null ? String(row[col.consequence]) : null,
+          source: row[col.source] != null ? String(row[col.source]) : null,
         });
       }
     }
