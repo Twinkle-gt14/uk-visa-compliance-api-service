@@ -71,4 +71,16 @@ export class SettingsController {
     if (!file) throw new BadRequestException("No file was uploaded.");
     return this.settingsService.uploadPreEmploymentValidationRules(req.user!.tenantId, file.buffer);
   }
+
+  // --- Employee Compliance Checklist ---
+  @Get("employee-compliance-checklist") listEmployeeComplianceChecklist(@Req() req: Request) {
+    return this.settingsService.listEmployeeComplianceChecklist(req.user!.tenantId);
+  }
+
+  @Post("employee-compliance-checklist/upload")
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
+  uploadEmployeeComplianceChecklist(@Req() req: Request, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException("No file was uploaded.");
+    return this.settingsService.uploadEmployeeComplianceChecklist(req.user!.tenantId, file.buffer);
+  }
 }

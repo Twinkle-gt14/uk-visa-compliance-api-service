@@ -108,3 +108,16 @@ export interface PreEmploymentValidationRuleDto {
   consequence: string;
   source: string;
 }
+
+export interface EmployeeComplianceChecklistDto {
+  id: string;
+  category: string;
+  section: string | null;
+  complianceArea: string;
+  checkRequirement: string;
+  triggerEvent: string;
+  deadline: string;
+  actionWhereToReport: string;
+  consequence: string;
+  source: string;
+}

@@ -9,6 +9,7 @@ import type {
   SponsorshipProfileDto,
   Soc2020CodeDto,
   PreEmploymentValidationRuleDto,
+  EmployeeComplianceChecklistDto,
   JurisdictionDto,
   WorkLocationDto,
   RoleDto,
@@ -608,6 +609,137 @@ export class SettingsService {
         );
       }
       return { imported: validRows.length };
+    });
+  }
+
+  // --- Employee Compliance Checklist (post-joining UK employer/
+  // sponsor duties) ---
+
+  async listEmployeeComplianceChecklist(tenantId: string): Promise<EmployeeComplianceChecklistDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source
+         FROM reference.employee_compliance_checklist
+         ORDER BY category, id`
+      );
+      return result.rows.map((r) => ({
+        id: r.id,
+        category: r.category ?? "",
+        section: r.section,
+        complianceArea: r.compliance_area ?? "",
+        checkRequirement: r.check_requirement ?? "",
+        triggerEvent: r.trigger_event ?? "",
+        deadline: r.deadline ?? "",
+        actionWhereToReport: r.action_where_to_report ?? "",
+        consequence: r.consequence ?? "",
+        source: r.source ?? "",
+      }));
+    });
+  }
+
+  /** Parses the workbook's two sheets - "Sponsored Workers" and "Non-
+   * Sponsored Employees" - each becomes its own category. Both sheets
+   * mix in section-header rows (only the first column filled, e.g.
+   * "1. Reporting duties...") among the real checklist rows; those
+   * are tracked as running state and attached to the rows that follow
+   * them, not inserted as rows themselves (a real row always has a
+   * Check / Requirement value, a section header never does). */
+  async uploadEmployeeComplianceChecklist(tenantId: string, fileBuffer: Buffer): Promise<{ imported: number }> {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: "buffer" });
+    } catch {
+      throw new BadRequestException("Couldn't read that file - is it a valid .xlsx spreadsheet?");
+    }
+
+    const CATEGORY_SHEETS: Record<string, string> = {
+      "Sponsored Workers": "Sponsored Workers",
+      "Non-Sponsored Employees": "Non-Sponsored Employees",
+    };
+
+    type ParsedRow = {
+      category: string;
+      section: string | null;
+      complianceArea: string;
+      checkRequirement: string | null;
+      triggerEvent: string | null;
+      deadline: string | null;
+      actionWhereToReport: string | null;
+      consequence: string | null;
+      source: string | null;
+    };
+    const parsedRows: ParsedRow[] = [];
+
+    for (const [sheetName, category] of Object.entries(CATEGORY_SHEETS)) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      const raw: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+      const headerRowIndex = raw.findIndex((row) => row[0] === "Compliance Area");
+      if (headerRowIndex === -1) continue;
+
+      let currentSection: string | null = null;
+      for (let i = headerRowIndex + 1; i < raw.length; i++) {
+        const row = raw[i];
+        if (!row || row.every((c) => c == null)) continue;
+
+        const complianceArea = row[0] != null ? String(row[0]).trim() : "";
+        const checkRequirement = row[1] != null ? String(row[1]).trim() : "";
+
+        // A section-header row has text in column A only - everything
+        // else is empty.
+        if (complianceArea && !checkRequirement) {
+          currentSection = complianceArea;
+          continue;
+        }
+        if (!complianceArea || !checkRequirement) continue;
+
+        parsedRows.push({
+          category,
+          section: currentSection,
+          complianceArea,
+          checkRequirement,
+          triggerEvent: row[2] != null ? String(row[2]) : null,
+          deadline: row[3] != null ? String(row[3]) : null,
+          actionWhereToReport: row[4] != null ? String(row[4]) : null,
+          consequence: row[5] != null ? String(row[5]) : null,
+          source: row[6] != null ? String(row[6]) : null,
+        });
+      }
+    }
+
+    if (!parsedRows.length) {
+      throw new BadRequestException(
+        'Couldn\'t find a "Sponsored Workers" or "Non-Sponsored Employees" sheet with the expected checklist columns.'
+      );
+    }
+
+    return withTenant(tenantId, async (client) => {
+      for (const r of parsedRows) {
+        await client.query(
+          `INSERT INTO reference.employee_compliance_checklist
+            (tenant_id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (tenant_id, category, compliance_area) DO UPDATE SET
+             section = EXCLUDED.section, check_requirement = EXCLUDED.check_requirement,
+             trigger_event = EXCLUDED.trigger_event, deadline = EXCLUDED.deadline,
+             action_where_to_report = EXCLUDED.action_where_to_report, consequence = EXCLUDED.consequence,
+             source = EXCLUDED.source, uploaded_at = now()`,
+          [
+            tenantId,
+            r.category,
+            r.section,
+            r.complianceArea,
+            r.checkRequirement,
+            r.triggerEvent,
+            r.deadline,
+            r.actionWhereToReport,
+            r.consequence,
+            r.source,
+          ]
+        );
+      }
+      return { imported: parsedRows.length };
     });
   }
 }
