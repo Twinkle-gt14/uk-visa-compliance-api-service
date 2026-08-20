@@ -620,7 +620,7 @@ export class SettingsService {
       const result = await client.query(
         `SELECT id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source
          FROM reference.employee_compliance_checklist
-         ORDER BY category, id`
+         ORDER BY category, sort_order`
       );
       return result.rows.map((r) => ({
         id: r.id,
@@ -667,6 +667,7 @@ export class SettingsService {
       actionWhereToReport: string | null;
       consequence: string | null;
       source: string | null;
+      sortOrder: number;
     };
     const parsedRows: ParsedRow[] = [];
 
@@ -716,6 +717,7 @@ export class SettingsService {
           actionWhereToReport: row[col.action] != null ? String(row[col.action]) : null,
           consequence: row[col.consequence] != null ? String(row[col.consequence]) : null,
           source: row[col.source] != null ? String(row[col.source]) : null,
+          sortOrder: parsedRows.length,
         });
       }
     }
@@ -727,16 +729,22 @@ export class SettingsService {
     }
 
     return withTenant(tenantId, async (client) => {
+      // Full replace, not merge - an earlier version of this used
+      // upsert semantics (insert-or-update by category+compliance
+      // area), which meant any row from a previous upload that the
+      // new file no longer matches (renamed, restructured, or from an
+      // older file version entirely) never got cleaned up - it just
+      // sat there forever, mixed in with the new rows, corrupting
+      // both content and sort_order. Deleting everything for this
+      // tenant first guarantees every upload starts from a clean
+      // slate.
+      await client.query(`DELETE FROM reference.employee_compliance_checklist WHERE tenant_id = $1`, [tenantId]);
+
       for (const r of parsedRows) {
         await client.query(
           `INSERT INTO reference.employee_compliance_checklist
-            (tenant_id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (tenant_id, category, compliance_area) DO UPDATE SET
-             section = EXCLUDED.section, check_requirement = EXCLUDED.check_requirement,
-             trigger_event = EXCLUDED.trigger_event, deadline = EXCLUDED.deadline,
-             action_where_to_report = EXCLUDED.action_where_to_report, consequence = EXCLUDED.consequence,
-             source = EXCLUDED.source, uploaded_at = now()`,
+            (tenant_id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source, sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             tenantId,
             r.category,
@@ -748,6 +756,7 @@ export class SettingsService {
             r.actionWhereToReport,
             r.consequence,
             r.source,
+            r.sortOrder,
           ]
         );
       }
