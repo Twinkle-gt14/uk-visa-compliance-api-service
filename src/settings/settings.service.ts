@@ -9,7 +9,7 @@ import type {
   SponsorshipProfileDto,
   Soc2020CodeDto,
   PreEmploymentValidationRuleDto,
-  EmployeeComplianceChecklistDto,
+  EmployeeComplianceSheetDto,
   JurisdictionDto,
   WorkLocationDto,
   RoleDto,
@@ -612,39 +612,40 @@ export class SettingsService {
     });
   }
 
-  // --- Employee Compliance Checklist (post-joining UK employer/
-  // sponsor duties) ---
+  // --- Employee Compliance (raw upload storage) ---
+  //
+  // Deliberately not parsed into typed columns - an earlier version
+  // tried to interpret each row into category/section/compliance-area
+  // fields, which broke repeatedly as the source file's own structure
+  // changed (a Type column appeared on one sheet but not the other,
+  // etc.) and, separately, used upsert-by-key semantics that left
+  // orphaned rows from earlier uploads mixed in with new ones. This
+  // version stores every sheet's rows exactly as they appear - no
+  // interpretation, so nothing about the file's shape can be
+  // misread - and every upload fully replaces whatever was there
+  // before (delete-then-insert, not merge), so there's no way for
+  // stale data to linger.
 
-  async listEmployeeComplianceChecklist(tenantId: string): Promise<EmployeeComplianceChecklistDto[]> {
+  async listEmployeeComplianceUpload(tenantId: string): Promise<EmployeeComplianceSheetDto[]> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
-        `SELECT id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source
-         FROM reference.employee_compliance_checklist
-         ORDER BY category, sort_order`
+        `SELECT sheet_name, row_index, cells
+         FROM reference.employee_compliance_upload_row
+         WHERE tenant_id = $1
+         ORDER BY sheet_name, row_index`,
+        [tenantId]
       );
-      return result.rows.map((r) => ({
-        id: r.id,
-        category: r.category ?? "",
-        section: r.section,
-        complianceArea: r.compliance_area ?? "",
-        checkRequirement: r.check_requirement ?? "",
-        triggerEvent: r.trigger_event ?? "",
-        deadline: r.deadline ?? "",
-        actionWhereToReport: r.action_where_to_report ?? "",
-        consequence: r.consequence ?? "",
-        source: r.source ?? "",
-      }));
+      const bySheet = new Map<string, (string | number | null)[][]>();
+      for (const r of result.rows) {
+        const rows = bySheet.get(r.sheet_name) ?? [];
+        rows.push(r.cells);
+        bySheet.set(r.sheet_name, rows);
+      }
+      return Array.from(bySheet.entries()).map(([sheetName, rows]) => ({ sheetName, rows }));
     });
   }
 
-  /** Parses the workbook's two sheets - "Sponsored Workers" and "Non-
-   * Sponsored Employees" - each becomes its own category. Both sheets
-   * mix in section-header rows (only the first column filled, e.g.
-   * "1. Reporting duties...") among the real checklist rows; those
-   * are tracked as running state and attached to the rows that follow
-   * them, not inserted as rows themselves (a real row always has a
-   * Check / Requirement value, a section header never does). */
-  async uploadEmployeeComplianceChecklist(tenantId: string, fileBuffer: Buffer): Promise<{ imported: number }> {
+  async uploadEmployeeComplianceUpload(tenantId: string, fileBuffer: Buffer): Promise<{ imported: number }> {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(fileBuffer, { type: "buffer" });
@@ -652,115 +653,39 @@ export class SettingsService {
       throw new BadRequestException("Couldn't read that file - is it a valid .xlsx spreadsheet?");
     }
 
-    const CATEGORY_SHEETS: Record<string, string> = {
-      "Sponsored Workers": "Sponsored Workers",
-      "Non-Sponsored Employees": "Non-Sponsored Employees",
-    };
-
-    type ParsedRow = {
-      category: string;
-      section: string | null;
-      complianceArea: string;
-      checkRequirement: string | null;
-      triggerEvent: string | null;
-      deadline: string | null;
-      actionWhereToReport: string | null;
-      consequence: string | null;
-      source: string | null;
-      sortOrder: number;
-    };
-    const parsedRows: ParsedRow[] = [];
-
-    for (const [sheetName, category] of Object.entries(CATEGORY_SHEETS)) {
-      const sheet = workbook.Sheets[sheetName];
-      if (!sheet) continue;
-
-      const raw: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
-      // A sheet may or may not have a leading "Type" column - Sponsored
-      // Workers gained one (Reporting Duties / Record Keeping Duties)
-      // while Non-Sponsored Employees kept the original 7-column
-      // layout, so every column read below is offset by whichever
-      // shape this particular sheet's header row turns out to be.
-      const headerRowIndex = raw.findIndex((row) => row[0] === "Type" || row[0] === "Compliance Area");
-      if (headerRowIndex === -1) continue;
-      const hasTypeColumn = raw[headerRowIndex][0] === "Type";
-      const col = hasTypeColumn ? { area: 1, req: 2, trigger: 3, deadline: 4, action: 5, consequence: 6, source: 7 } : { area: 0, req: 1, trigger: 2, deadline: 3, action: 4, consequence: 5, source: 6 };
-
-      // Without a Type column, section still has to be tracked from
-      // section-header-only rows (numbered rows with just column A
-      // filled) - kept as a fallback for exactly that case.
-      let currentSection: string | null = null;
-      for (let i = headerRowIndex + 1; i < raw.length; i++) {
-        const row = raw[i];
-        if (!row || row.every((c) => c == null)) continue;
-
-        const type = hasTypeColumn && row[0] != null ? String(row[0]).trim() : null;
-        const complianceArea = row[col.area] != null ? String(row[col.area]).trim() : "";
-        const checkRequirement = row[col.req] != null ? String(row[col.req]).trim() : "";
-
-        // A section-header row has text in the Compliance Area column
-        // only - everything else (including Type, when present) is
-        // empty.
-        if (complianceArea && !checkRequirement && !type) {
-          currentSection = complianceArea;
-          continue;
-        }
-        if (!complianceArea || !checkRequirement) continue;
-
-        parsedRows.push({
-          category,
-          section: type ?? currentSection,
-          complianceArea,
-          checkRequirement,
-          triggerEvent: row[col.trigger] != null ? String(row[col.trigger]) : null,
-          deadline: row[col.deadline] != null ? String(row[col.deadline]) : null,
-          actionWhereToReport: row[col.action] != null ? String(row[col.action]) : null,
-          consequence: row[col.consequence] != null ? String(row[col.consequence]) : null,
-          source: row[col.source] != null ? String(row[col.source]) : null,
-          sortOrder: parsedRows.length,
-        });
-      }
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException("That file doesn't have any sheets.");
     }
 
-    if (!parsedRows.length) {
-      throw new BadRequestException(
-        'Couldn\'t find a "Sponsored Workers" or "Non-Sponsored Employees" sheet with the expected checklist columns.'
-      );
+    type Entry = { sheetName: string; rowIndex: number; cells: (string | number | null)[] };
+    const entries: Entry[] = [];
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const raw: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+      raw.forEach((row, rowIndex) => {
+        if (!row || row.every((c) => c == null)) return;
+        entries.push({
+          sheetName,
+          rowIndex,
+          cells: row.map((c) => (c == null ? null : typeof c === "number" ? c : String(c))),
+        });
+      });
+    }
+
+    if (!entries.length) {
+      throw new BadRequestException("That file doesn't have any data to import.");
     }
 
     return withTenant(tenantId, async (client) => {
-      // Full replace, not merge - an earlier version of this used
-      // upsert semantics (insert-or-update by category+compliance
-      // area), which meant any row from a previous upload that the
-      // new file no longer matches (renamed, restructured, or from an
-      // older file version entirely) never got cleaned up - it just
-      // sat there forever, mixed in with the new rows, corrupting
-      // both content and sort_order. Deleting everything for this
-      // tenant first guarantees every upload starts from a clean
-      // slate.
-      await client.query(`DELETE FROM reference.employee_compliance_checklist WHERE tenant_id = $1`, [tenantId]);
-
-      for (const r of parsedRows) {
+      await client.query(`DELETE FROM reference.employee_compliance_upload_row WHERE tenant_id = $1`, [tenantId]);
+      for (const e of entries) {
         await client.query(
-          `INSERT INTO reference.employee_compliance_checklist
-            (tenant_id, category, section, compliance_area, check_requirement, trigger_event, deadline, action_where_to_report, consequence, source, sort_order)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-          [
-            tenantId,
-            r.category,
-            r.section,
-            r.complianceArea,
-            r.checkRequirement,
-            r.triggerEvent,
-            r.deadline,
-            r.actionWhereToReport,
-            r.consequence,
-            r.source,
-            r.sortOrder,
-          ]
+          `INSERT INTO reference.employee_compliance_upload_row (tenant_id, sheet_name, row_index, cells)
+           VALUES ($1,$2,$3,$4)`,
+          [tenantId, e.sheetName, e.rowIndex, JSON.stringify(e.cells)]
         );
       }
-      return { imported: parsedRows.length };
+      return { imported: entries.length };
     });
   }
 }
