@@ -136,6 +136,7 @@ export interface EmployeeUpsertDto {  // Personal
   currentLocation?: string;
   currentImmigrationStatus?: string;
   proposedAnnualSalary?: string;
+  salaryOffered?: string;
   jobContractFileName?: string | null;
   sponsoredEmployee?: string;
   britishEmployee?: string;
@@ -174,6 +175,10 @@ export interface EmployeeUpsertDto {  // Personal
   cosCertificateDate?: string;
   cosAssignedDate?: string;
   cosExpiryDate?: string;
+  cosApplyingFrom?: string;
+  cosType?: string;
+  cosGenuineVacancyConfirmed?: string;
+  cosGenuineVacancyConfirmedDate?: string;
   cosSponsorNote?: string;
   cosFileName?: string | null;
 

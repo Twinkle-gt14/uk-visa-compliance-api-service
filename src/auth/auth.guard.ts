@@ -17,6 +17,19 @@ declare module "express" {
   }
 }
 
+/** Same extraction AuthGuard uses below, pulled out so AuthController's
+ * /auth/refresh can read the caller's current token without going
+ * through AuthGuard itself - a token that's a few seconds past its
+ * 15-minute expiry must still reach AuthService.refresh() (which
+ * verifies it with ignoreExpiration and applies its own absolute-
+ * session-age check), where AuthGuard would reject it outright. */
+export function extractSessionToken(req: Request): string | undefined {
+  const bearer = req.headers.authorization?.startsWith("Bearer ")
+    ? req.headers.authorization.slice("Bearer ".length)
+    : undefined;
+  return req.cookies?.["uvc_session"] || bearer;
+}
+
 /**
  * Validates the uvc_session cookie (the same JWT issued by
  * AuthService.login) and attaches { userId, tenantId, role, employeeId }
@@ -29,10 +42,7 @@ export class AuthGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    const bearer = req.headers.authorization?.startsWith("Bearer ")
-      ? req.headers.authorization.slice("Bearer ".length)
-      : undefined;
-    const token = req.cookies?.["uvc_session"] || bearer;
+    const token = extractSessionToken(req);
 
     if (!token) {
       throw new UnauthorizedException("No session.");

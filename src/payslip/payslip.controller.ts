@@ -1,8 +1,8 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Query, Req, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
 import { AuthGuard, HrAdminGuard } from "../auth/auth.guard";
 import { PayslipService } from "./payslip.service";
-import type { UpdatePayslipComponentDto } from "./payslip.dto";
+import type { UpdatePayslipComponentDto, CreatePayslipComponentDto } from "./payslip.dto";
 
 @Controller("payslip")
 @UseGuards(AuthGuard, HrAdminGuard)
@@ -14,9 +14,23 @@ export class PayslipController {
     return this.payslipService.listComponents(req.user!.tenantId);
   }
 
+  @Post("components")
+  createComponent(@Req() req: Request, @Body() body: CreatePayslipComponentDto) {
+    if (!body.name?.trim()) throw new BadRequestException("name is required.");
+    if (body.componentType !== "earning" && body.componentType !== "deduction") {
+      throw new BadRequestException("componentType must be 'earning' or 'deduction'.");
+    }
+    return this.payslipService.createComponent(req.user!.tenantId, body.componentType, body.name, body.description);
+  }
+
   @Patch("components/:id")
   updateComponent(@Req() req: Request, @Param("id") id: string, @Body() body: UpdatePayslipComponentDto) {
-    return this.payslipService.updateComponent(req.user!.tenantId, id, body.selected);
+    return this.payslipService.updateComponent(req.user!.tenantId, id, body);
+  }
+
+  @Delete("components/:id")
+  deleteComponent(@Req() req: Request, @Param("id") id: string) {
+    return this.payslipService.deleteComponent(req.user!.tenantId, id);
   }
 
   @Get(":employeeId")

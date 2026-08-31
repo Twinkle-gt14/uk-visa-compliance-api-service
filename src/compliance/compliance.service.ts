@@ -44,6 +44,7 @@ import type {
   SupportingDocumentDto,
   RequestUploadDto,
   RequestUploadResponseDto,
+  PreEmploymentComplianceTypeDto,
 } from "./compliance.dto";
 
 const GOV_UK_SOURCE_URL = "https://www.gov.uk/guidance/immigration-rules/immigration-rules-appendix-skilled-occupations";
@@ -1192,6 +1193,84 @@ export class ComplianceService {
         islRemovalDate: toDateStr(r.isl_removal_date),
         islSourceVersion: r.isl_source_version,
       };
+    });
+  }
+
+  // --- Pre-employment Compliance types (Settings > Compliance >
+  // Pre-employment Compliance) - same list-and-toggle pattern as
+  // reference.payslip_component, but genuinely starts empty per
+  // tenant: no default rows are seeded on first read. ---
+
+  private rowToComplianceType(r: any): PreEmploymentComplianceTypeDto {
+    return {
+      id: r.id,
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      selected: r.is_selected,
+      order: r.sort_order,
+    };
+  }
+
+  async listComplianceTypes(tenantId: string): Promise<PreEmploymentComplianceTypeDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "SELECT * FROM reference.pre_employment_compliance_type WHERE tenant_id = $1 ORDER BY sort_order",
+        [tenantId]
+      );
+      return result.rows.map((r) => this.rowToComplianceType(r));
+    });
+  }
+
+  async createComplianceType(tenantId: string, name: string, description: string | undefined): Promise<PreEmploymentComplianceTypeDto> {
+    return withTenant(tenantId, async (client) => {
+      const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "compliance-type";
+      let slug = base;
+      let suffix = 1;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const clash = await client.query(
+          "SELECT 1 FROM reference.pre_employment_compliance_type WHERE tenant_id = $1 AND slug = $2",
+          [tenantId, slug]
+        );
+        if (!clash.rowCount) break;
+        slug = `${base}-${++suffix}`;
+      }
+      const maxOrder = await client.query(
+        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM reference.pre_employment_compliance_type WHERE tenant_id = $1",
+        [tenantId]
+      );
+      const result = await client.query(
+        `INSERT INTO reference.pre_employment_compliance_type (tenant_id, slug, name, description, is_selected, sort_order)
+         VALUES ($1,$2,$3,$4,true,$5)
+         RETURNING *`,
+        [tenantId, slug, name, description ?? null, maxOrder.rows[0].m + 1]
+      );
+      return this.rowToComplianceType(result.rows[0]);
+    });
+  }
+
+  async updateComplianceType(tenantId: string, id: string, updates: { name?: string; description?: string; selected?: boolean }): Promise<PreEmploymentComplianceTypeDto> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE reference.pre_employment_compliance_type
+         SET name = COALESCE($1, name),
+             description = COALESCE($2, description),
+             is_selected = COALESCE($3, is_selected),
+             updated_at = now()
+         WHERE id = $4
+         RETURNING *`,
+        [updates.name ?? null, updates.description ?? null, updates.selected ?? null, id]
+      );
+      if (!result.rowCount) throw new NotFoundException("Compliance type not found.");
+      return this.rowToComplianceType(result.rows[0]);
+    });
+  }
+
+  async deleteComplianceType(tenantId: string, id: string): Promise<void> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query("DELETE FROM reference.pre_employment_compliance_type WHERE id = $1", [id]);
+      if (!result.rowCount) throw new NotFoundException("Compliance type not found.");
     });
   }
 }

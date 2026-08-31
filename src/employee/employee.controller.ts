@@ -34,6 +34,17 @@ export class EmployeeController {
     return this.employeeService.getById(req.user!.tenantId, id);
   }
 
+  // HR-only (not assertSelfOrHrAdmin) - the History tab is on the
+  // Employee Register view page, which is HR-facing; an employee
+  // viewing their own record via the self-service redirect doesn't
+  // get a History tab at all, so there's no legitimate "self" case
+  // to allow here the way getOne() does.
+  @Get(":id/history")
+  @UseGuards(HrAdminGuard)
+  getHistory(@Req() req: Request, @Param("id") id: string) {
+    return this.employeeService.listChangeHistory(req.user!.tenantId, id);
+  }
+
   @Post()
   @UseGuards(HrAdminGuard)
   create(@Req() req: Request, @Body() body: EmployeeUpsertDto, @Headers("idempotency-key") idempotencyKey?: string) {
@@ -52,10 +63,45 @@ export class EmployeeController {
     return this.employeeService.createDraft(req.user!.tenantId, body.id, !!body.onboardedOnCreate);
   }
 
+  /** HR Admin editing anyone -> applies immediately, exactly as
+   * before. An employee editing their own record (assertSelfOrHrAdmin
+   * allows this the same way GET :id does) -> captured as a pending
+   * change request instead; employee_master isn't touched until an HR
+   * Admin approves it via PATCH change-requests/:requestId/decision
+   * below. changedBy is only meaningful (and only used) on the direct
+   * HR-edit path - a submitted request records requestedBy instead. */
   @Patch(":id")
+  update(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<EmployeeUpsertDto> & { changedBy?: string }) {
+    assertSelfOrHrAdmin(req.user!, id);
+    const { changedBy, ...dto } = body;
+    if (req.user!.role === "hr_admin") {
+      return this.employeeService.update(req.user!.tenantId, id, dto, changedBy);
+    }
+    return this.employeeService.submitChangeRequest(req.user!.tenantId, id, dto, changedBy);
+  }
+
+  /** HR's Workflow page - every employee-submitted change awaiting a
+   * decision (or, with ?status=, any other status). */
+  @Get("change-requests")
   @UseGuards(HrAdminGuard)
-  update(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<EmployeeUpsertDto>) {
-    return this.employeeService.update(req.user!.tenantId, id, body);
+  listChangeRequests(@Req() req: Request, @Query("status") status?: string) {
+    return this.employeeService.listChangeRequests(req.user!.tenantId, status);
+  }
+
+  @Get("change-requests/:requestId")
+  @UseGuards(HrAdminGuard)
+  getChangeRequest(@Req() req: Request, @Param("requestId") requestId: string) {
+    return this.employeeService.getChangeRequest(req.user!.tenantId, requestId);
+  }
+
+  @Patch("change-requests/:requestId/decision")
+  @UseGuards(HrAdminGuard)
+  decideChangeRequest(
+    @Req() req: Request,
+    @Param("requestId") requestId: string,
+    @Body() body: { decision: "Approved" | "Rejected"; reviewedBy?: string; note?: string }
+  ) {
+    return this.employeeService.decideChangeRequest(req.user!.tenantId, requestId, body.decision, body.reviewedBy, body.note);
   }
 
   /** Promotes a Draft to Active, enforcing the required-field

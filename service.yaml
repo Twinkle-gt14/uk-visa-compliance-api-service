@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: asia-south1-docker.pkg.dev/uk-visa-compliance-dev/uk-visa-compliance/api-service:v10
+          image: asia-south1-docker.pkg.dev/uk-visa-compliance-dev/uk-visa-compliance/api-service:v6
           ports:
             - containerPort: 8080
           env:

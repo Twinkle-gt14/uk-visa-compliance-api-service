@@ -1,7 +1,7 @@
 import { Body, Controller, Post, Req, Res, HttpCode, UseGuards } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
-import { AuthGuard } from "./auth.guard";
+import { AuthGuard, extractSessionToken } from "./auth.guard";
 
 @Controller("auth")
 export class AuthController {
@@ -40,6 +40,36 @@ export class AuthController {
       role: result.role,
       employeeId: result.employeeId,
     };
+  }
+
+  /** Silent renewal, polled by the frontend a couple of minutes before
+   * the access token expires (see uk-visa-shell/lib/auth.tsx). Not
+   * behind @UseGuards(AuthGuard) on purpose - a token that's already a
+   * few seconds past its 15-minute expiry is exactly the case this
+   * endpoint exists to handle, and AuthGuard would reject it outright.
+   * AuthService.refresh() does its own signature verification and
+   * absolute-session-age check instead. */
+  @Post("refresh")
+  @HttpCode(200)
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const token = extractSessionToken(req);
+    if (!token) {
+      return { ok: false, error: "No session." };
+    }
+
+    const result = await this.authService.refresh(token);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    res.cookie("uvc_session", result.token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "strict",
+      maxAge: 15 * 60 * 1000,
+    });
+
+    return { ok: true, token: result.token, role: result.role, employeeId: result.employeeId };
   }
 
   /** The logged-in user changing their own password - also how the

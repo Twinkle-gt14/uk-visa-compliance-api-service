@@ -270,160 +270,172 @@ export class EmployeeService {
   }
 
   async getById(tenantId: string, id: string): Promise<EmployeeUpsertDto & { id: string; recordStatus: EmployeeStatus }> {
-    return withTenant(tenantId, async (client) => {
-      const masterRes = await client.query(
-        `SELECT m.*, d.name AS department_name
-         FROM employee.employee_master m
-         LEFT JOIN reference.department d ON d.id = m.department_id
-         WHERE m.id = $1 AND NOT m.is_deleted`,
-        [id]
-      );
-      if (!masterRes.rowCount) throw new NotFoundException("Employee not found.");
-      const m = masterRes.rows[0];
+    return withTenant(tenantId, (client) => this.getByIdCore(client, tenantId, id));
+  }
 
-      const [contacts, emergency, bank, quals, certs, passport, visa, cos, rtw, docs, dependants] = await Promise.all([
-        client.query("SELECT * FROM employee.employee_contact_detail WHERE employee_id = $1 AND NOT is_removed", [id]),
-        client.query("SELECT * FROM employee.employee_emergency_contact WHERE employee_id = $1 LIMIT 1", [id]),
-        client.query("SELECT * FROM employee.employee_bank_detail WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_qualification WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_certification WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_passport_detail WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_visa_detail WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_cos_detail WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_rtw_check WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_document WHERE employee_id = $1", [id]),
-        client.query("SELECT * FROM employee.employee_dependant WHERE employee_id = $1", [id]),
-      ]);
+  /** Extracted from getById so update() can fetch the pre-change values
+   * within its own transaction (same client, same withTenant call) to
+   * build the change-history diff - calling the public getById() from
+   * inside update() would open a second, separate transaction instead
+   * of reusing the one already in progress. */
+  private async getByIdCore(client: PoolClient, tenantId: string, id: string): Promise<EmployeeUpsertDto & { id: string; recordStatus: EmployeeStatus }> {
+    const masterRes = await client.query(
+      `SELECT m.*, d.name AS department_name
+       FROM employee.employee_master m
+       LEFT JOIN reference.department d ON d.id = m.department_id
+       WHERE m.id = $1 AND NOT m.is_deleted`,
+      [id]
+    );
+    if (!masterRes.rowCount) throw new NotFoundException("Employee not found.");
+    const m = masterRes.rows[0];
 
-      const ni = await decrypt(client, m.ni_number_encrypted);
-      const b = bank.rows[0];
-      const accountNumber = b ? await decrypt(client, b.account_number_encrypted) : null;
-      const sortCode = b ? await decrypt(client, b.sort_code_encrypted) : null;
-      const iban = b ? await decrypt(client, b.iban_encrypted) : null;
-      const p = passport.rows[0];
-      const v = visa.rows[0];
-      const c = cos.rows[0];
-      const e = emergency.rows[0];
+    const [contacts, emergency, bank, quals, certs, passport, visa, cos, rtw, docs, dependants] = await Promise.all([
+      client.query("SELECT * FROM employee.employee_contact_detail WHERE employee_id = $1 AND NOT is_removed", [id]),
+      client.query("SELECT * FROM employee.employee_emergency_contact WHERE employee_id = $1 LIMIT 1", [id]),
+      client.query("SELECT * FROM employee.employee_bank_detail WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_qualification WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_certification WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_passport_detail WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_visa_detail WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_cos_detail WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_rtw_check WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_document WHERE employee_id = $1", [id]),
+      client.query("SELECT * FROM employee.employee_dependant WHERE employee_id = $1", [id]),
+    ]);
 
-      return {
-        id: m.id,
-        recordStatus: m.record_status,
-        photoFileName: m.photo_file_reference,
-        firstName: m.first_name ?? "",
-        middleName: m.middle_name ?? "",
-        lastName: m.last_name ?? "",
-        dateOfBirth: toDateStr(m.date_of_birth),
-        gender: m.gender ?? "",
-        nationality: m.nationality ?? "",
-        maritalStatus: m.marital_status ?? "",
-        nationalInsuranceNumber: ni ?? "",
+    const ni = await decrypt(client, m.ni_number_encrypted);
+    const b = bank.rows[0];
+    const accountNumber = b ? await decrypt(client, b.account_number_encrypted) : null;
+    const sortCode = b ? await decrypt(client, b.sort_code_encrypted) : null;
+    const iban = b ? await decrypt(client, b.iban_encrypted) : null;
+    const p = passport.rows[0];
+    const v = visa.rows[0];
+    const c = cos.rows[0];
+    const e = emergency.rows[0];
 
-        emails: contacts.rows
-          .filter((r) => r.contact_type === "email")
-          .map((r): EmailEntryDto => ({ id: r.id, type: r.contact_subtype, email: r.value, isPrimary: r.is_primary })),
-        phones: contacts.rows
-          .filter((r) => r.contact_type === "phone")
-          .map((r): PhoneEntryDto => ({ id: r.id, type: r.contact_subtype, number: r.value, isPrimary: r.is_primary })),
-        addresses: contacts.rows
-          .filter((r) => r.contact_type === "address")
-          .map((r): AddressEntryDto => ({
-            id: r.id, type: r.contact_subtype, line1: r.line1, line2: r.line2, city: r.city,
-            county: r.county, postcode: r.postcode, country: r.country, isPrimary: r.is_primary,
-          })),
+    return {
+      id: m.id,
+      recordStatus: m.record_status,
+      photoFileName: m.photo_file_reference,
+      firstName: m.first_name ?? "",
+      middleName: m.middle_name ?? "",
+      lastName: m.last_name ?? "",
+      dateOfBirth: toDateStr(m.date_of_birth),
+      gender: m.gender ?? "",
+      nationality: m.nationality ?? "",
+      maritalStatus: m.marital_status ?? "",
+      nationalInsuranceNumber: ni ?? "",
 
-        emergencyFullName: e?.full_name ?? "",
-        emergencyRelationship: e?.relationship ?? "",
-        emergencyPrimaryPhone: e?.primary_phone ?? "",
-        emergencySecondaryPhone: e?.secondary_phone ?? "",
-        emergencyAddress: e?.address ?? "",
-
-        employeeId: m.employee_id_label ?? "",
-        candidateId: m.candidate_id_label ?? "",
-        jobTitle: m.job_title ?? "",
-        department: m.department_name ?? "",
-        projectWorkBranch: m.project_work_branch ?? "",
-        reportingManager: m.reporting_manager_name ?? "",
-        employmentType: m.employment_type ?? "",
-        startDate: toDateStr(m.date_of_joining),
-        workLocation: m.work_location ?? "",
-        workTiming: m.work_timing ?? "",
-        standardHoursPerWeek: m.standard_hours_per_week?.toString() ?? "",
-        hourlyRate: m.hourly_rate?.toString() ?? "",
-        socNumber: m.soc_number ?? "",
-        jobDescription: m.job_description ?? "",
-        contractDuration: m.contract_duration ?? "",
-        currentLocation: m.current_location ?? "",
-        currentImmigrationStatus: m.current_immigration_status ?? "",
-        rtwEngagementType: m.rtw_engagement_type ?? "",
-        proposedAnnualSalary: m.proposed_annual_salary != null ? String(m.proposed_annual_salary) : "",
-        jobContractFileName: m.job_contract_file_reference,
-        sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
-        britishEmployee: m.british_employee ? "Yes" : "No",
-
-        accountHolderName: b?.account_holder_name ?? "",
-        bankName: b?.bank_name ?? "",
-        accountNumber: accountNumber ?? "",
-        sortCode: sortCode ?? "",
-        iban: iban ?? "",
-        bankDocumentFileName: b?.document_file_reference ?? null,
-
-        education: quals.rows.map((r): EducationEntryDto => ({
-          id: r.id, institution: r.institution, qualification: r.qualification, fieldOfStudy: r.field_of_study,
-          startDate: toDateStr(r.start_date), endDate: toDateStr(r.end_date), grade: r.grade, certificateFileName: r.certificate_file_reference,
-        })),
-        certifications: certs.rows.map((r): CertificationEntryDto => ({
-          id: r.id, name: r.name, issuingBody: r.issuing_body, certificateNumber: r.certificate_number,
-          issueDate: toDateStr(r.issue_date), expiryDate: toDateStr(r.expiry_date), fileName: r.file_reference,
+      emails: contacts.rows
+        .filter((r) => r.contact_type === "email")
+        .map((r): EmailEntryDto => ({ id: r.id, type: r.contact_subtype, email: r.value, isPrimary: r.is_primary })),
+      phones: contacts.rows
+        .filter((r) => r.contact_type === "phone")
+        .map((r): PhoneEntryDto => ({ id: r.id, type: r.contact_subtype, number: r.value, isPrimary: r.is_primary })),
+      addresses: contacts.rows
+        .filter((r) => r.contact_type === "address")
+        .map((r): AddressEntryDto => ({
+          id: r.id, type: r.contact_subtype, line1: r.line1, line2: r.line2, city: r.city,
+          county: r.county, postcode: r.postcode, country: r.country, isPrimary: r.is_primary,
         })),
 
-        passportNumber: p?.passport_number ?? "",
-        passportIssuingCountry: p?.issuing_country ?? "",
-        passportIssueDate: toDateStr(p?.issue_date),
-        passportExpiryDate: toDateStr(p?.expiry_date),
-        passportFileName: p?.file_reference ?? null,
+      emergencyFullName: e?.full_name ?? "",
+      emergencyRelationship: e?.relationship ?? "",
+      emergencyPrimaryPhone: e?.primary_phone ?? "",
+      emergencySecondaryPhone: e?.secondary_phone ?? "",
+      emergencyAddress: e?.address ?? "",
 
-        visaType: v?.visa_type ?? "",
-        visaNumber: v?.visa_number ?? "",
-        visaIssueDate: toDateStr(v?.issue_date),
-        visaExpiryDate: toDateStr(v?.expiry_date),
-        visaConditions: v?.conditions
-          ? v.conditions.replace(/^\{|\}$/g, "").split(",").map((s: string) => s.trim()).filter(Boolean)
-          : [],
-        visaFileName: v?.file_reference ?? null,
+      employeeId: m.employee_id_label ?? "",
+      candidateId: m.candidate_id_label ?? "",
+      jobTitle: m.job_title ?? "",
+      department: m.department_name ?? "",
+      projectWorkBranch: m.project_work_branch ?? "",
+      reportingManager: m.reporting_manager_name ?? "",
+      employmentType: m.employment_type ?? "",
+      startDate: toDateStr(m.date_of_joining),
+      workLocation: m.work_location ?? "",
+      workTiming: m.work_timing ?? "",
+      standardHoursPerWeek: m.standard_hours_per_week?.toString() ?? "",
+      hourlyRate: m.hourly_rate?.toString() ?? "",
+      socNumber: m.soc_number ?? "",
+      jobDescription: m.job_description ?? "",
+      contractDuration: m.contract_duration ?? "",
+      currentLocation: m.current_location ?? "",
+      currentImmigrationStatus: m.current_immigration_status ?? "",
+      rtwEngagementType: m.rtw_engagement_type ?? "",
+      proposedAnnualSalary: m.proposed_annual_salary != null ? String(m.proposed_annual_salary) : "",
+      salaryOffered: m.salary_offered ?? "",
+      jobContractFileName: m.job_contract_file_reference,
+      sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
+      britishEmployee: m.british_employee ? "Yes" : "No",
 
-        cosLicenceNumber: c?.licence_number ?? "",
-        cosSponsorName: c?.sponsor_name ?? "",
-        cosCertificateNumber: c?.certificate_number ?? "",
-        cosCertificateDate: toDateStr(c?.certificate_date),
-        cosAssignedDate: toDateStr(c?.assigned_date),
-        cosExpiryDate: toDateStr(c?.expiry_date),
-        cosSponsorNote: c?.sponsor_note ?? "",
-        cosFileName: c?.file_reference ?? null,
+      accountHolderName: b?.account_holder_name ?? "",
+      bankName: b?.bank_name ?? "",
+      accountNumber: accountNumber ?? "",
+      sortCode: sortCode ?? "",
+      iban: iban ?? "",
+      bankDocumentFileName: b?.document_file_reference ?? null,
 
-        rtwChecks: rtw.rows.map((r): RtwCheckEntryDto => ({
-          id: r.id, checkMethod: r.check_method, documentEvidenceType: r.document_evidence_type,
-          documentType: r.document_type, documentExpiryDate: toDateStr(r.document_expiry_date),
-          pvnDate: toDateStr(r.pvn_date),
-          shareCode: r.share_code, rtwReference: r.rtw_reference,
-          onlineCodeIssuedDate: toDateStr(r.online_code_issued_date),
-          onlinePermissionLimit: r.online_permission_limit, onlineExpiryDate: toDateStr(r.online_expiry_date),
-          idspProvider: r.idsp_provider,
-          checkedByName: r.checked_by_name, checkedByRole: r.checked_by_role,
-          dateOfCheck: toDateStr(r.date_of_check),
-          photoMatchConfirmed: !!r.photo_match_confirmed, knownReasonableCauseFlag: !!r.known_reasonable_cause_flag,
-          statutoryExcuseEstablished: r.statutory_excuse_established,
-          status: r.status, expiryDate: toDateStr(r.expiry_date), remarks: r.remarks,
-          attachmentFileName: r.attachment_file_reference,
-        })),
-        dependants: dependants.rows.map((r): DependantEntryDto => ({
-          id: r.id, name: r.name, relationship: r.relationship, dateOfBirth: toDateStr(r.date_of_birth),
-        })),
-        documents: docs.rows.map((r): DocumentEntryDto => ({
-          id: r.id, fileName: r.file_reference, documentType: r.document_type,
-          description: r.description, expiryDate: toDateStr(r.expiry_date),
-        })),
-      };
-    });
+      education: quals.rows.map((r): EducationEntryDto => ({
+        id: r.id, institution: r.institution, qualification: r.qualification, fieldOfStudy: r.field_of_study,
+        startDate: toDateStr(r.start_date), endDate: toDateStr(r.end_date), grade: r.grade, certificateFileName: r.certificate_file_reference,
+      })),
+      certifications: certs.rows.map((r): CertificationEntryDto => ({
+        id: r.id, name: r.name, issuingBody: r.issuing_body, certificateNumber: r.certificate_number,
+        issueDate: toDateStr(r.issue_date), expiryDate: toDateStr(r.expiry_date), fileName: r.file_reference,
+      })),
+
+      passportNumber: p?.passport_number ?? "",
+      passportIssuingCountry: p?.issuing_country ?? "",
+      passportIssueDate: toDateStr(p?.issue_date),
+      passportExpiryDate: toDateStr(p?.expiry_date),
+      passportFileName: p?.file_reference ?? null,
+
+      visaType: v?.visa_type ?? "",
+      visaNumber: v?.visa_number ?? "",
+      visaIssueDate: toDateStr(v?.issue_date),
+      visaExpiryDate: toDateStr(v?.expiry_date),
+      visaConditions: v?.conditions
+        ? v.conditions.replace(/^\{|\}$/g, "").split(",").map((s: string) => s.trim()).filter(Boolean)
+        : [],
+      visaFileName: v?.file_reference ?? null,
+
+      cosLicenceNumber: c?.licence_number ?? "",
+      cosSponsorName: c?.sponsor_name ?? "",
+      cosCertificateNumber: c?.certificate_number ?? "",
+      cosCertificateDate: toDateStr(c?.certificate_date),
+      cosAssignedDate: toDateStr(c?.assigned_date),
+      cosExpiryDate: toDateStr(c?.expiry_date),
+      cosApplyingFrom: c?.applying_from ?? "",
+      cosType: c?.cos_type ?? "",
+      cosGenuineVacancyConfirmed: c?.genuine_vacancy_confirmed ?? "",
+      cosGenuineVacancyConfirmedDate: toDateStr(c?.genuine_vacancy_confirmed_date),
+      cosSponsorNote: c?.sponsor_note ?? "",
+      cosFileName: c?.file_reference ?? null,
+
+      rtwChecks: rtw.rows.map((r): RtwCheckEntryDto => ({
+        id: r.id, checkMethod: r.check_method, documentEvidenceType: r.document_evidence_type,
+        documentType: r.document_type, documentExpiryDate: toDateStr(r.document_expiry_date),
+        pvnDate: toDateStr(r.pvn_date),
+        shareCode: r.share_code, rtwReference: r.rtw_reference,
+        onlineCodeIssuedDate: toDateStr(r.online_code_issued_date),
+        onlinePermissionLimit: r.online_permission_limit, onlineExpiryDate: toDateStr(r.online_expiry_date),
+        idspProvider: r.idsp_provider,
+        checkedByName: r.checked_by_name, checkedByRole: r.checked_by_role,
+        dateOfCheck: toDateStr(r.date_of_check),
+        photoMatchConfirmed: !!r.photo_match_confirmed, knownReasonableCauseFlag: !!r.known_reasonable_cause_flag,
+        statutoryExcuseEstablished: r.statutory_excuse_established,
+        status: r.status, expiryDate: toDateStr(r.expiry_date), remarks: r.remarks,
+        attachmentFileName: r.attachment_file_reference,
+      })),
+      dependants: dependants.rows.map((r): DependantEntryDto => ({
+        id: r.id, name: r.name, relationship: r.relationship, dateOfBirth: toDateStr(r.date_of_birth),
+      })),
+      documents: docs.rows.map((r): DocumentEntryDto => ({
+        id: r.id, fileName: r.file_reference, documentType: r.document_type,
+        description: r.description, expiryDate: toDateStr(r.expiry_date),
+      })),
+    };
   }
 
   /** Creates the near-empty row a wizard needs to exist *before* the
@@ -484,8 +496,8 @@ export class EmployeeService {
              project_work_branch=$17, sponsored_employee=$18, british_employee=$19, job_contract_file_reference=$20,
              date_of_joining=$21, reporting_manager_name=$22, photo_file_reference=$23, hourly_rate=$24,
              job_description=$25, contract_duration=$26, current_location=$27, current_immigration_status=$28,
-             proposed_annual_salary=$29, rtw_engagement_type=$30, record_status='Active', updated_at=now()
-           WHERE id=$31`,
+             proposed_annual_salary=$29, rtw_engagement_type=$30, salary_offered=$31, record_status='Active', updated_at=now()
+           WHERE id=$32`,
           [
             dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
             dto.gender || null, dto.maritalStatus || null, dto.nationality || null, niEncrypted, niHash,
@@ -498,6 +510,7 @@ export class EmployeeService {
             dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
             dto.rtwEngagementType || null,
+            dto.salaryOffered || null,
             id,
           ]
         );
@@ -556,8 +569,8 @@ export class EmployeeService {
              project_work_branch, sponsored_employee, british_employee, employee_id_label, candidate_id_label,
              job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate,
              job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary,
-             is_onboarded)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+             is_onboarded, salary_offered)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -571,6 +584,7 @@ export class EmployeeService {
             dto.jobDescription || null, dto.contractDuration || null, dto.currentLocation || null, dto.currentImmigrationStatus || null,
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
             !!dto.onboardedOnCreate,
+            dto.salaryOffered || null,
           ]
         );
         masterId = result.rows[0].id;
@@ -594,7 +608,205 @@ export class EmployeeService {
     });
   }
 
-  async update(tenantId: string, id: string, dto: Partial<EmployeeUpsertDto>): Promise<{ id: string }> {
+  /** Every field this diff/history system tracks, mapped to the tab it
+   * belongs to (shown as "Category" on the History tab) and a
+   * human-readable label. Covers every scalar/single-row field across
+   * both wizards - Bank Details and NI Number were previously excluded
+   * here for the same reason they're encrypted at rest, but are now
+   * included per an explicit decision to track them; their *values*
+   * are still masked (maskIfSensitive below) rather than logged in
+   * plain text, since encrypting a column at rest and then writing its
+   * raw value into a plain-text audit log would defeat the point of
+   * the encryption. True repeatable arrays (emails, phones, addresses,
+   * education, certifications, dependants, documents, RTW checks) are
+   * NOT listed here - they need item-level add/remove/change diffing,
+   * not a single old/new string comparison, and are handled separately
+   * by logArrayFieldChanges. */
+  private readonly TRACKABLE_FIELDS: { key: keyof EmployeeUpsertDto; label: string; category: string; sensitive?: boolean }[] = [
+    { key: "firstName", label: "First Name", category: "Personal" },
+    { key: "middleName", label: "Middle Name", category: "Personal" },
+    { key: "lastName", label: "Last Name", category: "Personal" },
+    { key: "dateOfBirth", label: "Date of Birth", category: "Personal" },
+    { key: "gender", label: "Gender", category: "Personal" },
+    { key: "maritalStatus", label: "Marital Status", category: "Personal" },
+    { key: "nationality", label: "Nationality", category: "Personal" },
+    { key: "nationalInsuranceNumber", label: "National Insurance Number", category: "Personal", sensitive: true },
+    { key: "emergencyFullName", label: "Full Name", category: "Emergency Contact" },
+    { key: "emergencyRelationship", label: "Relationship", category: "Emergency Contact" },
+    { key: "emergencyPrimaryPhone", label: "Primary Phone", category: "Emergency Contact" },
+    { key: "emergencySecondaryPhone", label: "Secondary Phone", category: "Emergency Contact" },
+    { key: "emergencyAddress", label: "Address", category: "Emergency Contact" },
+    { key: "jobTitle", label: "Job Title", category: "Work Details" },
+    { key: "department", label: "Department", category: "Work Details" },
+    { key: "projectWorkBranch", label: "Project / Work / Branch", category: "Work Details" },
+    { key: "reportingManager", label: "Reporting Manager", category: "Work Details" },
+    { key: "employmentType", label: "Employment Type", category: "Work Details" },
+    { key: "startDate", label: "Joining Date", category: "Work Details" },
+    { key: "workLocation", label: "Work Location", category: "Work Details" },
+    { key: "workTiming", label: "Work Timing", category: "Work Details" },
+    { key: "standardHoursPerWeek", label: "Weekly Working Hours", category: "Work Details" },
+    { key: "hourlyRate", label: "Hourly Rate", category: "Work Details" },
+    { key: "socNumber", label: "SOC Number", category: "Work Details" },
+    { key: "jobDescription", label: "Job Description", category: "Work Details" },
+    { key: "contractDuration", label: "Contract Duration", category: "Work Details" },
+    { key: "currentLocation", label: "Current Location", category: "Work Details" },
+    { key: "currentImmigrationStatus", label: "Current Immigration Status", category: "Work Details" },
+    { key: "rtwEngagementType", label: "RTW Engagement Type", category: "Work Details" },
+    { key: "proposedAnnualSalary", label: "Proposed Annual Salary", category: "Work Details" },
+    { key: "salaryOffered", label: "Salary Offered", category: "Work Details" },
+    // salaryDiscountOption / isHealthAndCareRole / guaranteedBasicGrossPay
+    // are deliberately not tracked here - they're SOC Details' non-
+    // binding salary preview values (see the FSD: "reference only, not
+    // editable"), never persisted to a backend column at all, so there
+    // is no real stored value to diff against.
+    { key: "sponsoredEmployee", label: "Sponsored Employee", category: "Work Details" },
+    { key: "britishEmployee", label: "British Employee", category: "Work Details" },
+    { key: "accountHolderName", label: "Account Holder Name", category: "Bank Details" },
+    { key: "bankName", label: "Bank Name", category: "Bank Details" },
+    { key: "accountNumber", label: "Account Number", category: "Bank Details", sensitive: true },
+    { key: "sortCode", label: "Sort Code", category: "Bank Details", sensitive: true },
+    { key: "iban", label: "IBAN", category: "Bank Details", sensitive: true },
+    { key: "passportNumber", label: "Passport Number", category: "Passport" },
+    { key: "passportIssuingCountry", label: "Issuing Country", category: "Passport" },
+    { key: "passportIssueDate", label: "Issue Date", category: "Passport" },
+    { key: "passportExpiryDate", label: "Expiry Date", category: "Passport" },
+    { key: "visaType", label: "Visa Type", category: "Visa" },
+    { key: "visaNumber", label: "Visa Number", category: "Visa" },
+    { key: "visaIssueDate", label: "Issue Date", category: "Visa" },
+    { key: "visaExpiryDate", label: "Expiry Date", category: "Visa" },
+    { key: "cosLicenceNumber", label: "Licence Number", category: "CoS" },
+    { key: "cosSponsorName", label: "Sponsor Name", category: "CoS" },
+    { key: "cosCertificateNumber", label: "Certificate Number", category: "CoS" },
+    { key: "cosCertificateDate", label: "Certificate Date", category: "CoS" },
+    { key: "cosAssignedDate", label: "Assigned Date", category: "CoS" },
+    { key: "cosExpiryDate", label: "Expiry Date", category: "CoS" },
+    { key: "cosApplyingFrom", label: "Applying From", category: "CoS" },
+    { key: "cosType", label: "CoS Type", category: "CoS" },
+    { key: "cosGenuineVacancyConfirmed", label: "Genuine Vacancy Confirmed", category: "CoS" },
+    { key: "cosGenuineVacancyConfirmedDate", label: "Genuine Vacancy Confirmed Date", category: "CoS" },
+    { key: "cosSponsorNote", label: "Remarks", category: "CoS" },
+  ];
+
+  /** Bank account/sort-code/IBAN/NI number are encrypted at rest for a
+   * reason - writing their raw value into a plain-text audit log would
+   * undo that. Masks down to the last 4 characters, same convention
+   * already used elsewhere in the app for displaying a masked account
+   * number. Non-sensitive fields pass through unchanged. */
+  private maskIfSensitive(value: string | null, sensitive: boolean | undefined): string | null {
+    if (!sensitive || value == null || value === "") return value;
+    const visible = value.slice(-4);
+    return `\u2022\u2022\u2022\u2022 ${visible}`;
+  }
+
+  /** Inserts one employee.employee_change_history row per field that
+   * actually changed value (present in dto and different from
+   * oldData) - called after a successful update() of an Active
+   * record. Deliberately never throws: a history-logging failure
+   * shouldn't roll back an otherwise-successful save. */
+  private async logFieldChanges(
+    client: PoolClient,
+    tenantId: string,
+    employeeId: string,
+    oldData: EmployeeUpsertDto,
+    dto: Partial<EmployeeUpsertDto>,
+    changedBy: string | undefined
+  ): Promise<void> {
+    for (const field of this.TRACKABLE_FIELDS) {
+      const newVal = dto[field.key];
+      if (newVal === undefined) continue;
+      const oldVal = oldData[field.key];
+      if (String(oldVal ?? "") === String(newVal ?? "")) continue;
+      const oldStr = oldVal != null && oldVal !== "" ? String(oldVal) : null;
+      const newStr = newVal != null && newVal !== "" ? String(newVal) : null;
+      await client.query(
+        `INSERT INTO employee.employee_change_history
+           (tenant_id, employee_id, category, field_label, old_value, new_value, changed_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [tenantId, employeeId, field.category, field.label, this.maskIfSensitive(oldStr, field.sensitive), this.maskIfSensitive(newStr, field.sensitive), changedBy ?? null]
+      );
+    }
+    await this.logArrayFieldChanges(client, tenantId, employeeId, oldData, dto, changedBy);
+  }
+
+  /** Item-level add/remove/change logging for the true repeatable
+   * fields (emails, phones, addresses, education, certifications,
+   * dependants, documents) - these can't be diffed as a single old/new
+   * string the way TRACKABLE_FIELDS' scalar fields can, since the
+   * "value" is a whole list of records. Matches items between the old
+   * and new arrays by id: an id only in the new array is an addition,
+   * only in the old array is a removal, present in both but with
+   * different describe() output is a change. Right to Work checks are
+   * deliberately not included here - RTW's own compliance-status
+   * derivation already has its own history-equivalent surface (the
+   * compliance timeline), and its fields don't map cleanly onto a
+   * single-line description the way the others do. */
+  private async logArrayFieldChanges(
+    client: PoolClient,
+    tenantId: string,
+    employeeId: string,
+    oldData: EmployeeUpsertDto,
+    dto: Partial<EmployeeUpsertDto>,
+    changedBy: string | undefined
+  ): Promise<void> {
+    const insert = async (category: string, fieldLabel: string, oldValue: string | null, newValue: string | null) => {
+      await client.query(
+        `INSERT INTO employee.employee_change_history
+           (tenant_id, employee_id, category, field_label, old_value, new_value, changed_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [tenantId, employeeId, category, fieldLabel, oldValue, newValue, changedBy ?? null]
+      );
+    };
+
+    async function diff<T extends { id?: string }>(
+      category: string,
+      label: string,
+      oldArr: T[] | undefined,
+      newArr: T[] | undefined,
+      describe: (item: T) => string
+    ) {
+      if (newArr === undefined) return; // field not part of this save at all
+      const oldById = new Map((oldArr ?? []).map((item) => [item.id, item]));
+      const newById = new Map(newArr.map((item) => [item.id, item]));
+
+      for (const [id, item] of newById) {
+        if (!id || !oldById.has(id)) {
+          await insert(category, `${label} added`, null, describe(item));
+        }
+      }
+      for (const [id, item] of oldById) {
+        if (!id || !newById.has(id)) {
+          await insert(category, `${label} removed`, describe(item), null);
+        }
+      }
+      for (const [id, newItem] of newById) {
+        const oldItem = id ? oldById.get(id) : undefined;
+        if (!oldItem) continue;
+        const before = describe(oldItem);
+        const after = describe(newItem);
+        if (before !== after) await insert(category, `${label} updated`, before, after);
+      }
+    }
+
+    await diff("Contact", "Email", oldData.emails, dto.emails, (e) => `${e.email || "\u2014"} (${e.type}${e.isPrimary ? ", primary" : ""})`);
+    await diff("Contact", "Phone", oldData.phones, dto.phones, (p) => `${p.number || "\u2014"} (${p.type}${p.isPrimary ? ", primary" : ""})`);
+    await diff("Contact", "Address", oldData.addresses, dto.addresses, (a) =>
+      [a.line1, a.city, a.postcode].filter(Boolean).join(", ") + ` (${a.type}${a.isPrimary ? ", primary" : ""})`
+    );
+    await diff("Education & Certifications", "Education record", oldData.education, dto.education, (e) =>
+      [e.qualification, e.institution, e.fieldOfStudy].filter(Boolean).join(" \u2013 ") || "\u2014"
+    );
+    await diff("Education & Certifications", "Certification", oldData.certifications, dto.certifications, (c) =>
+      [c.name, c.issuingBody].filter(Boolean).join(" \u2013 ") || "\u2014"
+    );
+    await diff("Visa", "Dependant", oldData.dependants, dto.dependants, (d) =>
+      [d.name, d.relationship].filter(Boolean).join(" \u2013 ") || "\u2014"
+    );
+    await diff("Documents", "Document", oldData.documents, dto.documents, (d) =>
+      [d.fileName, d.documentType].filter(Boolean).join(" \u2013 ") || "\u2014"
+    );
+  }
+
+  async update(tenantId: string, id: string, dto: Partial<EmployeeUpsertDto>, changedBy?: string): Promise<{ id: string }> {
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
         "SELECT id, record_status FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
@@ -606,6 +818,54 @@ export class EmployeeService {
         throw new BadRequestException(
           `This employee is ${existing.rows[0].record_status.toLowerCase()} and cannot be edited - reactivate the record first.`
         );
+      }
+
+      // Change-history, the SOC/Job-Title rule, and the mandatory-
+      // evidence rule only apply to editing an already-Active record -
+      // a Draft mid-wizard is filling fields in for the first time,
+      // not "changing" anything meaningful to audit.
+      let oldData: EmployeeUpsertDto | null = null;
+      if (!isDraft) {
+        oldData = await this.getByIdCore(client, tenantId, id);
+
+        if (dto.jobTitle !== undefined && dto.jobTitle !== oldData.jobTitle) {
+          const socAlsoChanging = dto.socNumber !== undefined && dto.socNumber !== oldData.socNumber;
+          if (!socAlsoChanging) {
+            throw new BadRequestException("SOC code must be updated to match the new Job Title.");
+          }
+        }
+
+        const passportChanged =
+          (dto.passportNumber !== undefined && dto.passportNumber !== oldData.passportNumber) ||
+          (dto.passportExpiryDate !== undefined && dto.passportExpiryDate !== oldData.passportExpiryDate);
+        const visaChanged =
+          (dto.visaType !== undefined && dto.visaType !== oldData.visaType) ||
+          (dto.visaNumber !== undefined && dto.visaNumber !== oldData.visaNumber) ||
+          (dto.visaExpiryDate !== undefined && dto.visaExpiryDate !== oldData.visaExpiryDate);
+        const cosChanged =
+          (dto.cosCertificateNumber !== undefined && dto.cosCertificateNumber !== oldData.cosCertificateNumber) ||
+          (dto.cosExpiryDate !== undefined && dto.cosExpiryDate !== oldData.cosExpiryDate);
+
+        // "New evidence" = a document of the matching type uploaded
+        // since this record's own last save - not just any document
+        // of that type ever on file, which could just be the old one.
+        for (const [changed, docType] of [
+          [passportChanged, "Passport"],
+          [visaChanged, "Visa"],
+          [cosChanged, "Certificate of Sponsorship"],
+        ] as const) {
+          if (!changed) continue;
+          const recentDoc = await client.query(
+            `SELECT 1 FROM employee.employee_document d
+             WHERE d.employee_id = $1 AND d.document_type = $2
+               AND d.created_at > (SELECT updated_at FROM employee.employee_master WHERE id = $1)
+             LIMIT 1`,
+            [id, docType]
+          );
+          if (!recentDoc.rowCount) {
+            throw new BadRequestException(`New supporting evidence must be uploaded before saving a change to ${docType}.`);
+          }
+        }
       }
 
       const sets: string[] = [];
@@ -645,6 +905,7 @@ export class EmployeeService {
       if (dto.currentImmigrationStatus !== undefined) set("current_immigration_status", dto.currentImmigrationStatus || null);
       if (dto.rtwEngagementType !== undefined) set("rtw_engagement_type", dto.rtwEngagementType || null);
       if (dto.proposedAnnualSalary !== undefined) set("proposed_annual_salary", dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null);
+      if (dto.salaryOffered !== undefined) set("salary_offered", dto.salaryOffered || null);
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
       if (dto.britishEmployee !== undefined) set("british_employee", dto.britishEmployee === "Yes");
@@ -677,7 +938,233 @@ export class EmployeeService {
       }
 
       await this.writeChildRecords(client, tenantId, id, dto);
+
+      if (!isDraft && oldData) {
+        await this.logFieldChanges(client, tenantId, id, oldData, dto, changedBy);
+      }
+
       return { id };
+    });
+  }
+
+  /** The self-service counterpart to update() - an employee editing
+   * their own record. Deliberately does NOT touch employee_master at
+   * all: captures a diff against the current record as a pending
+   * request instead, which only takes effect once an HR Admin approves
+   * it (decideChangeRequest below, which calls this same update()
+   * method to actually apply it - so approval gets every existing
+   * business rule, such as the SOC/Job-Title coupling and the
+   * mandatory-evidence rule, for free rather than re-implementing them
+   * here).
+   *
+   * Deliberately scoped to TRACKABLE_FIELDS' scalar/single-row fields
+   * only for this first version - the true repeatable arrays (emails,
+   * phones, addresses, education, certifications, dependants,
+   * documents) need their own item-level approve/reject UX to be
+   * genuinely useful (approving "add one phone number" shouldn't force
+   * approving an unrelated address edit bundled into the same array),
+   * which is a larger, separate piece of work. An employee's Edit
+   * wizard can still be opened and those sections viewed; submitting a
+   * change to one is out of scope for this iteration and should be
+   * caught by the frontend before it reaches here.
+   */
+  async submitChangeRequest(
+    tenantId: string,
+    employeeId: string,
+    dto: Partial<EmployeeUpsertDto>,
+    requestedBy: string | undefined
+  ): Promise<{ id: string; pending: true } | { id: string; pending: false }> {
+    return withTenant(tenantId, async (client) => {
+      const existing = await client.query(
+        "SELECT id, record_status FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        [employeeId]
+      );
+      if (!existing.rowCount) throw new NotFoundException("Employee not found.");
+      if (existing.rows[0].record_status !== "Active") {
+        throw new BadRequestException("Your record isn't currently active - contact HR.");
+      }
+
+      const oldData = await this.getByIdCore(client, tenantId, employeeId);
+
+      const items: { key: keyof EmployeeUpsertDto; label: string; category: string; oldValue: string | null; newValue: string | null }[] = [];
+      for (const field of this.TRACKABLE_FIELDS) {
+        const newVal = dto[field.key];
+        if (newVal === undefined) continue;
+        const oldVal = oldData[field.key];
+        if (String(oldVal ?? "") === String(newVal ?? "")) continue;
+        items.push({
+          key: field.key,
+          label: field.label,
+          category: field.category,
+          oldValue: oldVal != null && oldVal !== "" ? String(oldVal) : null,
+          newValue: newVal != null && newVal !== "" ? String(newVal) : null,
+        });
+      }
+
+      if (items.length === 0) {
+        // Nothing actually changed (or only array fields were touched,
+        // which this endpoint doesn't accept) - nothing to submit.
+        return { id: employeeId, pending: false };
+      }
+
+      const header = await client.query(
+        `INSERT INTO employee.employee_change_request (tenant_id, employee_id, requested_by)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [tenantId, employeeId, requestedBy ?? null]
+      );
+      const requestId = header.rows[0].id;
+
+      for (const item of items) {
+        await client.query(
+          `INSERT INTO employee.employee_change_request_item
+             (request_id, category, field_key, field_label, old_value, new_value)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [requestId, item.category, item.key, item.label, item.oldValue, item.newValue]
+        );
+      }
+
+      return { id: requestId, pending: true };
+    });
+  }
+
+  /** For the Workflow page's list view. */
+  async listChangeRequests(tenantId: string, status?: string): Promise<any[]> {
+    const result = await withTenant(tenantId, async (client) => {
+      return client.query(
+        `SELECT r.id, r.employee_id, r.status, r.requested_by, r.requested_at, r.reviewed_by, r.reviewed_at, r.review_note,
+                m.first_name, m.middle_name, m.last_name, m.employee_id_label,
+                (SELECT COUNT(*) FROM employee.employee_change_request_item i WHERE i.request_id = r.id) AS field_count
+         FROM employee.employee_change_request r
+         JOIN employee.employee_master m ON m.id = r.employee_id
+         WHERE r.tenant_id = $1 ${status ? "AND r.status = $2" : ""}
+         ORDER BY r.requested_at DESC`,
+        status ? [tenantId, status] : [tenantId]
+      );
+    });
+    return result.rows.map((r) => ({
+      id: r.id,
+      employeeId: r.employee_id,
+      employeeName: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" "),
+      employeeNumber: r.employee_id_label,
+      status: r.status,
+      requestedBy: r.requested_by,
+      requestedAt: r.requested_at,
+      reviewedBy: r.reviewed_by,
+      reviewedAt: r.reviewed_at,
+      reviewNote: r.review_note,
+      fieldCount: Number(r.field_count),
+    }));
+  }
+
+  /** Full field-level detail for one request, for the Workflow page's
+   * approve/reject detail view. */
+  async getChangeRequest(tenantId: string, requestId: string): Promise<any> {
+    const result = await withTenant(tenantId, async (client) => {
+      return client.query(
+        `SELECT r.id, r.employee_id, r.status, r.requested_by, r.requested_at, r.reviewed_by, r.reviewed_at, r.review_note,
+                m.first_name, m.middle_name, m.last_name, m.employee_id_label
+         FROM employee.employee_change_request r
+         JOIN employee.employee_master m ON m.id = r.employee_id
+         WHERE r.tenant_id = $1 AND r.id = $2`,
+        [tenantId, requestId]
+      );
+    });
+    if (!result.rowCount) throw new NotFoundException("Change request not found.");
+    const r = result.rows[0];
+
+    const items = await withTenant(tenantId, async (client) => {
+      return client.query(
+        `SELECT category, field_key, field_label, old_value, new_value
+         FROM employee.employee_change_request_item WHERE request_id = $1 ORDER BY category, field_label`,
+        [requestId]
+      );
+    });
+
+    return {
+      id: r.id,
+      employeeId: r.employee_id,
+      employeeName: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" "),
+      employeeNumber: r.employee_id_label,
+      status: r.status,
+      requestedBy: r.requested_by,
+      requestedAt: r.requested_at,
+      reviewedBy: r.reviewed_by,
+      reviewedAt: r.reviewed_at,
+      reviewNote: r.review_note,
+      items: items.rows.map((i) => ({
+        category: i.category,
+        fieldKey: i.field_key,
+        fieldLabel: i.field_label,
+        oldValue: i.old_value,
+        newValue: i.new_value,
+      })),
+    };
+  }
+
+  /** Approving replays the request's items through the exact same
+   * update() an HR Admin's own direct edit would go through - same
+   * validation, same history logging (changedBy records the reviewer,
+   * with a note that this originated from the employee's own request,
+   * so History doesn't misrepresent who typed the original value).
+   * Rejecting just marks the request closed; employee_master is never
+   * touched. Either way the request moves out of "Pending" and off the
+   * Workflow page's default list. */
+  async decideChangeRequest(
+    tenantId: string,
+    requestId: string,
+    decision: "Approved" | "Rejected",
+    reviewedBy: string | undefined,
+    note: string | undefined
+  ): Promise<{ id: string }> {
+    const detail = await this.getChangeRequest(tenantId, requestId);
+    if (detail.status !== "Pending") {
+      throw new BadRequestException(`This request has already been ${detail.status.toLowerCase()}.`);
+    }
+
+    if (decision === "Approved") {
+      const dto: Partial<EmployeeUpsertDto> = {};
+      for (const item of detail.items) {
+        (dto as any)[item.fieldKey] = item.newValue ?? "";
+      }
+      await this.update(tenantId, detail.employeeId, dto, `${reviewedBy ?? "HR"} (approved employee request)`);
+    }
+
+    await withTenant(tenantId, async (client) => {
+      return client.query(
+        `UPDATE employee.employee_change_request
+         SET status = $1, reviewed_by = $2, reviewed_at = now(), review_note = $3
+         WHERE id = $4 AND tenant_id = $5`,
+        [decision, reviewedBy ?? null, note ?? null, requestId, tenantId]
+      );
+    });
+
+    return { id: requestId };
+  }
+
+  /** Chronological (most recent first) change history for the History
+   * tab - every field-level change recorded by logFieldChanges above. */
+  async listChangeHistory(tenantId: string, employeeId: string): Promise<{
+    id: string; category: string; fieldLabel: string; oldValue: string | null; newValue: string | null;
+    changedAt: string; changedBy: string | null; evidenceFileReference: string | null;
+  }[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, category, field_label, old_value, new_value, changed_at, changed_by, evidence_file_reference
+         FROM employee.employee_change_history
+         WHERE employee_id = $1
+         ORDER BY changed_at DESC`,
+        [employeeId]
+      );
+      return result.rows.map((r) => ({
+        id: r.id,
+        category: r.category,
+        fieldLabel: r.field_label,
+        oldValue: r.old_value,
+        newValue: r.new_value,
+        changedAt: r.changed_at.toISOString(),
+        changedBy: r.changed_by,
+        evidenceFileReference: r.evidence_file_reference,
+      }));
     });
   }
 
@@ -884,14 +1371,17 @@ export class EmployeeService {
 
     if (dto.cosLicenceNumber !== undefined) {
       await client.query(
-        `INSERT INTO employee.employee_cos_detail (tenant_id, employee_id, licence_number, sponsor_name, certificate_number, certificate_date, assigned_date, expiry_date, sponsor_note, file_reference)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        `INSERT INTO employee.employee_cos_detail (tenant_id, employee_id, licence_number, sponsor_name, certificate_number, certificate_date, assigned_date, expiry_date, applying_from, cos_type, genuine_vacancy_confirmed, genuine_vacancy_confirmed_date, sponsor_note, file_reference)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (employee_id) DO UPDATE SET
            licence_number = EXCLUDED.licence_number, sponsor_name = EXCLUDED.sponsor_name,
            certificate_number = EXCLUDED.certificate_number, certificate_date = EXCLUDED.certificate_date,
            assigned_date = EXCLUDED.assigned_date, expiry_date = EXCLUDED.expiry_date,
+           applying_from = EXCLUDED.applying_from, cos_type = EXCLUDED.cos_type,
+           genuine_vacancy_confirmed = EXCLUDED.genuine_vacancy_confirmed,
+           genuine_vacancy_confirmed_date = EXCLUDED.genuine_vacancy_confirmed_date,
            sponsor_note = EXCLUDED.sponsor_note, file_reference = EXCLUDED.file_reference`,
-        [tenantId, employeeId, dto.cosLicenceNumber || null, dto.cosSponsorName || null, dto.cosCertificateNumber || null, dto.cosCertificateDate || null, dto.cosAssignedDate || null, dto.cosExpiryDate || null, dto.cosSponsorNote || null, dto.cosFileName || null]
+        [tenantId, employeeId, dto.cosLicenceNumber || null, dto.cosSponsorName || null, dto.cosCertificateNumber || null, dto.cosCertificateDate || null, dto.cosAssignedDate || null, dto.cosExpiryDate || null, dto.cosApplyingFrom || null, dto.cosType || null, dto.cosGenuineVacancyConfirmed || null, dto.cosGenuineVacancyConfirmedDate || null, dto.cosSponsorNote || null, dto.cosFileName || null]
       );
     }
 

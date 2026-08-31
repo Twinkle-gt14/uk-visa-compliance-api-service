@@ -242,3 +242,26 @@ export interface RequestUploadResponseDto {
   documentId: string;
   uploadUrl: string;
 }
+
+/** Settings > Compliance > Pre-employment Compliance - which check
+ * types appear on a candidate's Pre-hire Compliance checklist. Same
+ * shape as PayslipComponentDto, minus the earning/deduction split. */
+export interface PreEmploymentComplianceTypeDto {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  selected: boolean;
+  order: number;
+}
+
+export interface CreatePreEmploymentComplianceTypeDto {
+  name: string;
+  description?: string;
+}
+
+export interface UpdatePreEmploymentComplianceTypeDto {
+  name?: string;
+  description?: string;
+  selected?: boolean;
+}

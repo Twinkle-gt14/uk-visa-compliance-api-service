@@ -16,7 +16,20 @@ export interface JwtPayload {
   tenantId: string;
   role: "hr_admin" | "employee";
   employeeId: string | null;
+  /** Unix seconds when this session was first created at login - carried
+   * forward unchanged by every refresh() reissue below, so it always
+   * reflects the *original* sign-in, not the most recent silent renewal.
+   * This is what caps total session length; without it, silent refresh
+   * alone would let a session renew itself forever. */
+  origIat: number;
 }
+
+/** How long a session may be kept alive by silent refresh before the
+ * person has to sign in again, regardless of how recently it was last
+ * refreshed. Independent of the 15-minute access-token expiry itself -
+ * that controls how often a refresh has to happen; this controls how
+ * many times it's allowed to. */
+const ABSOLUTE_SESSION_LIFETIME_SECONDS = 12 * 60 * 60; // 12 hours
 
 @Injectable()
 export class AuthService {
@@ -54,10 +67,56 @@ export class AuthService {
       tenantId: row.tenant_id,
       role: row.role,
       employeeId: row.employee_id,
+      origIat: Math.floor(Date.now() / 1000),
     };
     const token = jwt.sign(payload, this.jwtSecret, { expiresIn: "15m" });
 
     return { ok: true, token, mustChangePassword: !!row.must_change_password, role: row.role, employeeId: row.employee_id };
+  }
+
+  /**
+   * Silent renewal: called by AuthController's POST /auth/refresh,
+   * itself called by the frontend a couple of minutes before its
+   * 15-minute access token expires (see uk-visa-shell/lib/auth.tsx),
+   * so an active user is never actually signed out mid-task by the
+   * access token's short lifetime.
+   *
+   * Accepts a token that may already be expired - ignoreExpiration is
+   * deliberate here, since the whole point is reissuing before (or
+   * shortly after) that boundary - but still verifies the signature,
+   * so this can't be used to extend a forged or tampered token. What
+   * actually bounds how long a session can be kept alive this way is
+   * origIat: once ABSOLUTE_SESSION_LIFETIME_SECONDS has passed since
+   * the *original* login, refresh stops working and the person has to
+   * sign in again, the same as if they'd never refreshed at all.
+   */
+  async refresh(token: string): Promise<LoginResult> {
+    let payload: JwtPayload & { iat: number };
+    try {
+      payload = jwt.verify(token, this.jwtSecret, { ignoreExpiration: true }) as JwtPayload & { iat: number };
+    } catch {
+      return { ok: false, error: "Session expired or invalid." };
+    }
+
+    // Tokens issued before origIat existed have no way to know their
+    // true session age - fall back to their own iat rather than
+    // treating them as infinitely refreshable.
+    const sessionStart = payload.origIat ?? payload.iat;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (nowSeconds - sessionStart > ABSOLUTE_SESSION_LIFETIME_SECONDS) {
+      return { ok: false, error: "Session expired. Please sign in again." };
+    }
+
+    const newPayload: JwtPayload = {
+      userId: payload.userId,
+      tenantId: payload.tenantId,
+      role: payload.role,
+      employeeId: payload.employeeId,
+      origIat: sessionStart,
+    };
+    const newToken = jwt.sign(newPayload, this.jwtSecret, { expiresIn: "15m" });
+
+    return { ok: true, token: newToken, role: payload.role, employeeId: payload.employeeId };
   }
 
   /**

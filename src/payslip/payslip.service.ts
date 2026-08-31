@@ -108,14 +108,60 @@ export class PayslipService {
     });
   }
 
-  async updateComponent(tenantId: string, id: string, selected: boolean): Promise<PayslipComponentDto> {
+  async updateComponent(tenantId: string, id: string, updates: { name?: string; description?: string; selected?: boolean }): Promise<PayslipComponentDto> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
-        "UPDATE reference.payslip_component SET is_selected = $1, updated_at = now() WHERE id = $2 RETURNING *",
-        [selected, id]
+        `UPDATE reference.payslip_component
+         SET name = COALESCE($1, name),
+             description = COALESCE($2, description),
+             is_selected = COALESCE($3, is_selected),
+             updated_at = now()
+         WHERE id = $4
+         RETURNING *`,
+        [updates.name ?? null, updates.description ?? null, updates.selected ?? null, id]
       );
       if (!result.rowCount) throw new NotFoundException("Payslip component not found.");
       return rowToComponent(result.rows[0]);
+    });
+  }
+
+  /** Slug is derived from the name (not user-supplied) - matches the
+   * existing "earn-basic"/"ded-paye" convention closely enough for a
+   * stable, readable identifier without asking the person adding a
+   * custom component to also invent a slug themselves. */
+  async createComponent(tenantId: string, componentType: "earning" | "deduction", name: string, description: string | undefined): Promise<PayslipComponentDto> {
+    return withTenant(tenantId, async (client) => {
+      const prefix = componentType === "earning" ? "earn" : "ded";
+      const base = `${prefix}-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}` || `${prefix}-component`;
+      let slug = base;
+      let suffix = 1;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const clash = await client.query(
+          "SELECT 1 FROM reference.payslip_component WHERE tenant_id = $1 AND slug = $2",
+          [tenantId, slug]
+        );
+        if (!clash.rowCount) break;
+        slug = `${base}-${++suffix}`;
+      }
+      const maxOrder = await client.query(
+        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM reference.payslip_component WHERE tenant_id = $1 AND component_type = $2",
+        [tenantId, componentType]
+      );
+      const result = await client.query(
+        `INSERT INTO reference.payslip_component (tenant_id, slug, name, description, component_type, is_selected, sort_order)
+         VALUES ($1,$2,$3,$4,$5,true,$6)
+         RETURNING *`,
+        [tenantId, slug, name, description ?? null, componentType, maxOrder.rows[0].m + 1]
+      );
+      return rowToComponent(result.rows[0]);
+    });
+  }
+
+  async deleteComponent(tenantId: string, id: string): Promise<void> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query("DELETE FROM reference.payslip_component WHERE id = $1", [id]);
+      if (!result.rowCount) throw new NotFoundException("Payslip component not found.");
     });
   }
 

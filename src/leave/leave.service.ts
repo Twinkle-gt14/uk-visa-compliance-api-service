@@ -177,6 +177,28 @@ export class LeaveService {
    * requests today. This makes the check authoritative: pending/
    * approved requests for the same employee that overlap the requested
    * range are a 409, not just a warning. */
+  /** Counts only genuine working days in [startDate, endDate] inclusive -
+   * excludes Saturdays/Sundays and any date present in this tenant's
+   * reference.holiday. Previously this was a naive calendar-day count
+   * (endDate - startDate + 1), which meant a request spanning a
+   * weekend or a Bank Holiday deducted those non-working days from
+   * the employee's balance too. Existing requests already in the
+   * table keep their old count - this only affects new submissions
+   * going forward. */
+  private async countWorkingDays(client: PoolClient, tenantId: string, startDate: string, endDate: string): Promise<number> {
+    const result = await client.query(
+      `SELECT COUNT(*) AS working_days
+       FROM generate_series($1::date, $2::date, '1 day'::interval) AS d
+       WHERE EXTRACT(DOW FROM d) NOT IN (0, 6)
+         AND NOT EXISTS (
+           SELECT 1 FROM reference.holiday h
+           WHERE h.tenant_id = $3 AND h.holiday_date = d::date
+         )`,
+      [startDate, endDate, tenantId]
+    );
+    return Number(result.rows[0].working_days);
+  }
+
   async createLeaveRequest(tenantId: string, dto: CreateLeaveRequestDto): Promise<LeaveRequestDto> {
     this.assertValidRequest(dto);
 
@@ -200,7 +222,7 @@ export class LeaveService {
         throw new ConflictException("This employee already has a pending or approved leave request that overlaps these dates.");
       }
 
-      const noOfDays = Math.round((new Date(dto.endDate).getTime() - new Date(dto.startDate).getTime()) / 86400000) + 1;
+      const noOfDays = await this.countWorkingDays(client, tenantId, dto.startDate, dto.endDate);
 
       const inserted = await client.query(
         `INSERT INTO leave.leave_request

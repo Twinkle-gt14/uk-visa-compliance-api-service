@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
 import { AuthGuard, HrAdminGuard, assertSelfOrHrAdmin } from "../auth/auth.guard";
 import { ComplianceService } from "./compliance.service";
-import type { UpdateSkilledWorkerRuleDto, CreateSponsorshipAssessmentDto, RequestUploadDto } from "./compliance.dto";
+import type { UpdateSkilledWorkerRuleDto, CreateSponsorshipAssessmentDto, RequestUploadDto, CreatePreEmploymentComplianceTypeDto, UpdatePreEmploymentComplianceTypeDto } from "./compliance.dto";
 
 // AuthGuard applies to everything here (must be signed in at all).
 // HrAdminGuard is applied per-method rather than at the class level -
@@ -187,5 +187,32 @@ export class ComplianceController {
   deleteDocument(@Req() req: Request, @Param("documentId") documentId: string) {
     const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;
     return this.complianceService.softDeleteDocument(req.user!.tenantId, documentId, requesterEmployeeId);
+  }
+
+  // --- Pre-employment Compliance types (Settings > Compliance) ---
+
+  @Get("pre-employment-types")
+  @UseGuards(HrAdminGuard)
+  listComplianceTypes(@Req() req: Request) {
+    return this.complianceService.listComplianceTypes(req.user!.tenantId);
+  }
+
+  @Post("pre-employment-types")
+  @UseGuards(HrAdminGuard)
+  createComplianceType(@Req() req: Request, @Body() body: CreatePreEmploymentComplianceTypeDto) {
+    if (!body.name?.trim()) throw new BadRequestException("name is required.");
+    return this.complianceService.createComplianceType(req.user!.tenantId, body.name, body.description);
+  }
+
+  @Patch("pre-employment-types/:id")
+  @UseGuards(HrAdminGuard)
+  updateComplianceType(@Req() req: Request, @Param("id") id: string, @Body() body: UpdatePreEmploymentComplianceTypeDto) {
+    return this.complianceService.updateComplianceType(req.user!.tenantId, id, body);
+  }
+
+  @Delete("pre-employment-types/:id")
+  @UseGuards(HrAdminGuard)
+  deleteComplianceType(@Req() req: Request, @Param("id") id: string) {
+    return this.complianceService.deleteComplianceType(req.user!.tenantId, id);
   }
 }

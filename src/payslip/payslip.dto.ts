@@ -11,7 +11,15 @@ export interface PayslipComponentDto {
 }
 
 export interface UpdatePayslipComponentDto {
-  selected: boolean;
+  name?: string;
+  description?: string;
+  selected?: boolean;
+}
+
+export interface CreatePayslipComponentDto {
+  componentType: PayslipComponentType;
+  name: string;
+  description?: string;
 }
 
 export interface PayslipLineDto {
