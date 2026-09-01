@@ -28,6 +28,40 @@ export class EmployeeController {
     return this.employeeService.list(req.user!.tenantId, pageNum, sizeNum, onboardedFilter);
   }
 
+  // These three "change-requests" routes MUST be declared before
+  // @Get(":id") / @Patch(":id") below. Nest (Express under the hood)
+  // matches routes in declaration order, and ":id" matches any single
+  // path segment - including the literal word "change-requests". With
+  // ":id" declared first, GET /employees/change-requests was being
+  // swallowed by getOne() (id="change-requests"), which then failed
+  // trying to look up an employee with that "id" and surfaced as a
+  // 500 - this is what broke the Workflow page. Keeping these above
+  // the dynamic :id routes is what makes the Workflow page's own
+  // endpoint reachable at all.
+  /** HR's Workflow page - every employee-submitted change awaiting a
+   * decision (or, with ?status=, any other status). */
+  @Get("change-requests")
+  @UseGuards(HrAdminGuard)
+  listChangeRequests(@Req() req: Request, @Query("status") status?: string) {
+    return this.employeeService.listChangeRequests(req.user!.tenantId, status);
+  }
+
+  @Get("change-requests/:requestId")
+  @UseGuards(HrAdminGuard)
+  getChangeRequest(@Req() req: Request, @Param("requestId") requestId: string) {
+    return this.employeeService.getChangeRequest(req.user!.tenantId, requestId);
+  }
+
+  @Patch("change-requests/:requestId/decision")
+  @UseGuards(HrAdminGuard)
+  decideChangeRequest(
+    @Req() req: Request,
+    @Param("requestId") requestId: string,
+    @Body() body: { decision: "Approved" | "Rejected"; reviewedBy?: string; note?: string }
+  ) {
+    return this.employeeService.decideChangeRequest(req.user!.tenantId, requestId, body.decision, body.reviewedBy, body.note);
+  }
+
   @Get(":id")
   getOne(@Req() req: Request, @Param("id") id: string) {
     assertSelfOrHrAdmin(req.user!, id);
@@ -43,6 +77,16 @@ export class EmployeeController {
   @UseGuards(HrAdminGuard)
   getHistory(@Req() req: Request, @Param("id") id: string) {
     return this.employeeService.listChangeHistory(req.user!.tenantId, id);
+  }
+
+  // Same self-or-HR-admin access as GET :id (not HR-only like
+  // :id/history) - this drives the Profile tab's per-field "pending
+  // approval" display, which an employee needs to see on their own
+  // record just as much as HR does on theirs.
+  @Get(":id/pending-changes")
+  getPendingChanges(@Req() req: Request, @Param("id") id: string) {
+    assertSelfOrHrAdmin(req.user!, id);
+    return this.employeeService.getPendingFieldChanges(req.user!.tenantId, id);
   }
 
   @Post()
@@ -68,7 +112,7 @@ export class EmployeeController {
    * allows this the same way GET :id does) -> captured as a pending
    * change request instead; employee_master isn't touched until an HR
    * Admin approves it via PATCH change-requests/:requestId/decision
-   * below. changedBy is only meaningful (and only used) on the direct
+   * above. changedBy is only meaningful (and only used) on the direct
    * HR-edit path - a submitted request records requestedBy instead. */
   @Patch(":id")
   update(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<EmployeeUpsertDto> & { changedBy?: string }) {
@@ -78,30 +122,6 @@ export class EmployeeController {
       return this.employeeService.update(req.user!.tenantId, id, dto, changedBy);
     }
     return this.employeeService.submitChangeRequest(req.user!.tenantId, id, dto, changedBy);
-  }
-
-  /** HR's Workflow page - every employee-submitted change awaiting a
-   * decision (or, with ?status=, any other status). */
-  @Get("change-requests")
-  @UseGuards(HrAdminGuard)
-  listChangeRequests(@Req() req: Request, @Query("status") status?: string) {
-    return this.employeeService.listChangeRequests(req.user!.tenantId, status);
-  }
-
-  @Get("change-requests/:requestId")
-  @UseGuards(HrAdminGuard)
-  getChangeRequest(@Req() req: Request, @Param("requestId") requestId: string) {
-    return this.employeeService.getChangeRequest(req.user!.tenantId, requestId);
-  }
-
-  @Patch("change-requests/:requestId/decision")
-  @UseGuards(HrAdminGuard)
-  decideChangeRequest(
-    @Req() req: Request,
-    @Param("requestId") requestId: string,
-    @Body() body: { decision: "Approved" | "Rejected"; reviewedBy?: string; note?: string }
-  ) {
-    return this.employeeService.decideChangeRequest(req.user!.tenantId, requestId, body.decision, body.reviewedBy, body.note);
   }
 
   /** Promotes a Draft to Active, enforcing the required-field

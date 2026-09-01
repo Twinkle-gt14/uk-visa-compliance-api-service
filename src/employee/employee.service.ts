@@ -1168,6 +1168,54 @@ export class EmployeeService {
     });
   }
 
+  /** Field-level view of every currently-Pending change request against
+   * this employee, keyed by field_key - drives the Profile tab's
+   * per-field "old value, pending approval" display (both the HR
+   * Admin's own view of the record and the employee's view of their
+   * own record use the same endpoint, gated the same way GET :id is).
+   * A field can only ever have one outstanding value here: nothing else
+   * lets a second request be submitted while one is already Pending, so
+   * there's no ordering concern the way listChangeHistory has to think
+   * about (most-recent-first) for a field with several historical
+   * entries. employee_master itself is never touched by a Pending
+   * request, so the value the UI is already showing for each field
+   * *is* the old value - this only needs to add what's pending on top
+   * of it, not re-fetch or duplicate the current record. */
+  async getPendingFieldChanges(tenantId: string, employeeId: string): Promise<Record<string, {
+    requestId: string; category: string; fieldLabel: string; oldValue: string | null; newValue: string | null; requestedBy: string | null; requestedAt: string;
+  }>> {
+    const result = await withTenant(tenantId, async (client) => {
+      return client.query(
+        `SELECT i.field_key, i.category, i.field_label, i.old_value, i.new_value,
+                r.id AS request_id, r.requested_by, r.requested_at
+         FROM employee.employee_change_request_item i
+         JOIN employee.employee_change_request r ON r.id = i.request_id
+         WHERE r.tenant_id = $1 AND r.employee_id = $2 AND r.status = 'Pending'
+         ORDER BY r.requested_at DESC`,
+        [tenantId, employeeId]
+      );
+    });
+    const byField: Record<string, {
+      requestId: string; category: string; fieldLabel: string; oldValue: string | null; newValue: string | null; requestedBy: string | null; requestedAt: string;
+    }> = {};
+    for (const r of result.rows) {
+      // Most-recent-first ordering means the first row seen per
+      // field_key wins if, for some reason, more than one Pending
+      // request ever touched the same field.
+      if (byField[r.field_key]) continue;
+      byField[r.field_key] = {
+        requestId: r.request_id,
+        category: r.category,
+        fieldLabel: r.field_label,
+        oldValue: r.old_value,
+        newValue: r.new_value,
+        requestedBy: r.requested_by,
+        requestedAt: r.requested_at.toISOString(),
+      };
+    }
+    return byField;
+  }
+
   async updateStatus(tenantId: string, id: string, recordStatus: EmployeeStatus): Promise<{ id: string; recordStatus: EmployeeStatus }> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
