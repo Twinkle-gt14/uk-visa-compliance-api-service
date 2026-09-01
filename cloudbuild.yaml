@@ -2,7 +2,6 @@ substitutions:
   _REGION: asia-south1
   _REPO: uk-visa-compliance
   _SERVICE: api-service
-  _AR_HOST: ${_REGION}-docker.pkg.dev
 
 steps:
   # Build the image
@@ -10,17 +9,17 @@ steps:
     args:
       - "build"
       - "-t"
-      - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
       - "-t"
-      - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
       - "."
 
   # Push both tags
   - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"]
+    args: ["push", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"]
 
   - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"]
+    args: ["push", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"]
 
   # Deploy via `services replace`, NOT `run deploy` - this is a
   # multi-container service (api + pgbouncer sidecar, VPC connector,
@@ -29,17 +28,24 @@ steps:
   # sidecar/VPC/secret config on deploy. We only rewrite the `api`
   # container's image line (pinned to this commit's SHA) and leave the
   # rest of service.yaml - sidecar image, VPC connector, secrets - untouched.
+  #
+  # Values are inlined directly (${_REGION}-docker.pkg.dev) rather than
+  # through an intermediate _AR_HOST substitution - Cloud Build does not
+  # resolve one substitution variable's default value from another, so
+  # `_AR_HOST: ${_REGION}-docker.pkg.dev` previously expanded to that
+  # literal, unresolved string everywhere it was used (see the
+  # frontend's cloudbuild.yaml history for the same bug and fix).
   - name: "gcr.io/cloud-builders/gcloud"
     entrypoint: bash
     args:
       - "-c"
       - |
-        sed -i "s|image: ${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:.*|image: ${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}|" service.yaml
+        sed -i "s|image: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:.*|image: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}|" service.yaml
         gcloud run services replace service.yaml --region=${_REGION}
 
 images:
-  - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
-  - "${_AR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
 
 options:
   logging: CLOUD_LOGGING_ONLY
