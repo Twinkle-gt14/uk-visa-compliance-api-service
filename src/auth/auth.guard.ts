@@ -55,14 +55,27 @@ export class AuthGuard implements CanActivate {
         role?: "hr_admin" | "employee";
         employeeId?: string | null;
       };
-      // role/employeeId are absent on tokens issued before this change
-      // (still valid until they expire, max 15 minutes out) - treat
-      // those as hr_admin, matching every session that existed before
-      // employee logins did.
+      // A token with no role claim used to be treated as hr_admin -
+      // the more privileged role - on the theory that it could only be
+      // a pre-employee-login token, "still valid until they expire,
+      // max 15 minutes out". That assumption didn't hold: refresh()
+      // used to carry the old payload's role forward unchanged into
+      // each newly-minted token, so a session that ever lost its role
+      // claim kept reissuing role-less tokens indefinitely, each one
+      // silently upgraded to hr_admin here, well past 15 minutes.
+      // refresh() now re-reads role fresh from security.credential on
+      // every renewal (see AuthService.refresh), so a legitimate
+      // session should never actually hit this case going forward;
+      // this now fails closed instead of failing open, so a token that
+      // does turn up without one is rejected rather than trusted with
+      // the more powerful role by default.
+      if (!payload.role) {
+        throw new UnauthorizedException("Session expired or invalid.");
+      }
       req.user = {
         userId: payload.userId,
         tenantId: payload.tenantId,
-        role: payload.role ?? "hr_admin",
+        role: payload.role,
         employeeId: payload.employeeId ?? null,
       };
       return true;

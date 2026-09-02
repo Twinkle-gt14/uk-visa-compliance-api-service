@@ -89,6 +89,18 @@ export class AuthService {
    * origIat: once ABSOLUTE_SESSION_LIFETIME_SECONDS has passed since
    * the *original* login, refresh stops working and the person has to
    * sign in again, the same as if they'd never refreshed at all.
+   *
+   * Authorization-relevant fields (role, employeeId, tenantId) are
+   * re-read from security.credential here, not copied forward from
+   * the old token's payload. The old behaviour trusted whatever the
+   * previous token said, which meant (a) a role change or account
+   * deactivation made by HR never took effect against an already-live
+   * session until its full 12-hour absolute lifetime ran out, and (b)
+   * a token that was ever missing its role claim for any reason kept
+   * re-minting new "valid" tokens that were also missing it,
+   * indefinitely - AuthGuard's handling of a missing role is a
+   * separate, defensive fix, but this is the one that actually stops
+   * it from happening on every legitimate refresh in the first place.
    */
   async refresh(token: string): Promise<LoginResult> {
     let payload: JwtPayload & { iat: number };
@@ -107,16 +119,30 @@ export class AuthService {
       return { ok: false, error: "Session expired. Please sign in again." };
     }
 
+    // Re-fetch current identity/authorization from the source of
+    // truth rather than trusting the token being renewed. A row that
+    // no longer exists (account deleted) fails the refresh outright,
+    // forcing a real re-login rather than silently keeping a deleted
+    // account's session alive.
+    const result = await authPool.query(
+      `SELECT tenant_id, role, employee_id FROM security.credential WHERE id = $1`,
+      [payload.userId]
+    );
+    if (result.rowCount === 0) {
+      return { ok: false, error: "Session expired. Please sign in again." };
+    }
+    const row = result.rows[0];
+
     const newPayload: JwtPayload = {
       userId: payload.userId,
-      tenantId: payload.tenantId,
-      role: payload.role,
-      employeeId: payload.employeeId,
+      tenantId: row.tenant_id,
+      role: row.role,
+      employeeId: row.employee_id,
       origIat: sessionStart,
     };
     const newToken = jwt.sign(newPayload, this.jwtSecret, { expiresIn: "15m" });
 
-    return { ok: true, token: newToken, role: payload.role, employeeId: payload.employeeId };
+    return { ok: true, token: newToken, role: row.role, employeeId: row.employee_id };
   }
 
   /**
