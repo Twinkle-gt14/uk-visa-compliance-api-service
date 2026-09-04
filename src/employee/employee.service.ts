@@ -365,6 +365,7 @@ export class EmployeeService {
       rtwEngagementType: m.rtw_engagement_type ?? "",
       proposedAnnualSalary: m.proposed_annual_salary != null ? String(m.proposed_annual_salary) : "",
       salaryOffered: m.salary_offered ?? "",
+      guaranteedBasicGrossPay: m.guaranteed_basic_gross_pay ?? "",
       jobContractFileName: m.job_contract_file_reference,
       sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
       britishEmployee: m.british_employee ? "Yes" : "No",
@@ -496,8 +497,8 @@ export class EmployeeService {
              project_work_branch=$17, sponsored_employee=$18, british_employee=$19, job_contract_file_reference=$20,
              date_of_joining=$21, reporting_manager_name=$22, photo_file_reference=$23, hourly_rate=$24,
              job_description=$25, contract_duration=$26, current_location=$27, current_immigration_status=$28,
-             proposed_annual_salary=$29, rtw_engagement_type=$30, salary_offered=$31, record_status='Active', updated_at=now()
-           WHERE id=$32`,
+             proposed_annual_salary=$29, rtw_engagement_type=$30, salary_offered=$31, guaranteed_basic_gross_pay=$32, record_status='Active', updated_at=now()
+           WHERE id=$33`,
           [
             dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
             dto.gender || null, dto.maritalStatus || null, dto.nationality || null, niEncrypted, niHash,
@@ -511,6 +512,7 @@ export class EmployeeService {
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
             dto.rtwEngagementType || null,
             dto.salaryOffered || null,
+            dto.guaranteedBasicGrossPay || null,
             id,
           ]
         );
@@ -569,8 +571,8 @@ export class EmployeeService {
              project_work_branch, sponsored_employee, british_employee, employee_id_label, candidate_id_label,
              job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate,
              job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary,
-             is_onboarded, salary_offered)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+             is_onboarded, salary_offered, guaranteed_basic_gross_pay)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -585,6 +587,7 @@ export class EmployeeService {
             dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null,
             !!dto.onboardedOnCreate,
             dto.salaryOffered || null,
+            dto.guaranteedBasicGrossPay || null,
           ]
         );
         masterId = result.rows[0].id;
@@ -654,11 +657,14 @@ export class EmployeeService {
     { key: "rtwEngagementType", label: "RTW Engagement Type", category: "Work Details" },
     { key: "proposedAnnualSalary", label: "Proposed Annual Salary", category: "Work Details" },
     { key: "salaryOffered", label: "Salary Offered", category: "Work Details" },
-    // salaryDiscountOption / isHealthAndCareRole / guaranteedBasicGrossPay
-    // are deliberately not tracked here - they're SOC Details' non-
-    // binding salary preview values (see the FSD: "reference only, not
-    // editable"), never persisted to a backend column at all, so there
-    // is no real stored value to diff against.
+    // salaryDiscountOption / isHealthAndCareRole are deliberately not
+    // tracked here - they're SOC Details' non-binding salary preview
+    // toggles, never persisted to a backend column at all, so there is
+    // no real stored value to diff against. guaranteedBasicGrossPay
+    // used to be grouped with these two but is now a real persisted
+    // column (see migration 040) - still not tracked in change
+    // history since it isn't gated by the pending-approval workflow
+    // the way the rest of Work Details is; revisit if that changes.
     { key: "sponsoredEmployee", label: "Sponsored Employee", category: "Work Details" },
     { key: "britishEmployee", label: "British Employee", category: "Work Details" },
     { key: "accountHolderName", label: "Account Holder Name", category: "Bank Details" },
@@ -906,6 +912,7 @@ export class EmployeeService {
       if (dto.rtwEngagementType !== undefined) set("rtw_engagement_type", dto.rtwEngagementType || null);
       if (dto.proposedAnnualSalary !== undefined) set("proposed_annual_salary", dto.proposedAnnualSalary ? Number(dto.proposedAnnualSalary) : null);
       if (dto.salaryOffered !== undefined) set("salary_offered", dto.salaryOffered || null);
+      if (dto.guaranteedBasicGrossPay !== undefined) set("guaranteed_basic_gross_pay", dto.guaranteedBasicGrossPay || null);
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
       if (dto.britishEmployee !== undefined) set("british_employee", dto.britishEmployee === "Yes");

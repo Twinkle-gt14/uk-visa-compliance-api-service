@@ -7,12 +7,13 @@ import type { UpdateSkilledWorkerRuleDto, CreateSponsorshipAssessmentDto, Reques
 
 // AuthGuard applies to everything here (must be signed in at all).
 // HrAdminGuard is applied per-method rather than at the class level -
-// the Supporting Evidence (document) endpoints at the bottom are the
-// deliberate exception, since an employee-role session needs to
-// upload/list/download/delete their *own* documents (e.g. a Leave
-// Apply attachment), just not anyone else's. Everything else in this
-// controller (SOC codes, ISL data, sponsorship assessments, imports)
-// stays HR-only.
+// the Supporting Evidence (document) endpoints at the bottom, and
+// GET sponsorship-assessments/:employeeId below, are the deliberate
+// exceptions, since an employee-role session needs to see their own
+// documents and their own Sponsorship Assessment status (both real,
+// legitimate self-access - not anyone else's). Everything else in
+// this controller (SOC codes, ISL data, creating/deciding a
+// sponsorship assessment, imports) stays HR-only.
 @Controller("compliance")
 @UseGuards(AuthGuard)
 export class ComplianceController {
@@ -95,9 +96,18 @@ export class ComplianceController {
     return this.complianceService.listEducationPayScales(req.user!.tenantId);
   }
 
+  // Self-or-HR-admin, not HR-only - an employee viewing their own
+  // Compliance > Immigration & Sponsorship tab needs to know their own
+  // assessment decision (see ImmigrationSponsorshipTab.tsx). This used
+  // to be HR-only, which meant the fetch silently 403'd for an
+  // employee session and got caught as "no assessment exists" - that
+  // false negative then cascaded into the CoS step's status too
+  // (CoS is gated on the assessment's "Eligible" decision), making
+  // both steps show as not-started even when HR's view of the exact
+  // same record showed them completed.
   @Get("sponsorship-assessments/:employeeId")
-  @UseGuards(HrAdminGuard)
   listSponsorshipAssessments(@Req() req: Request, @Param("employeeId") employeeId: string) {
+    assertSelfOrHrAdmin(req.user!, employeeId);
     return this.complianceService.listSponsorshipAssessments(req.user!.tenantId, employeeId);
   }
 

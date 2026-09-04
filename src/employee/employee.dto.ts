@@ -137,6 +137,7 @@ export interface EmployeeUpsertDto {  // Personal
   currentImmigrationStatus?: string;
   proposedAnnualSalary?: string;
   salaryOffered?: string;
+  guaranteedBasicGrossPay?: string;
   jobContractFileName?: string | null;
   sponsoredEmployee?: string;
   britishEmployee?: string;
