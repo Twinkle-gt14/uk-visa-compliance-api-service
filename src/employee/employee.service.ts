@@ -855,18 +855,31 @@ export class EmployeeService {
         // "New evidence" = a document of the matching type uploaded
         // since this record's own last save - not just any document
         // of that type ever on file, which could just be the old one.
-        for (const [changed, docType] of [
-          [passportChanged, "Passport"],
-          [visaChanged, "Visa"],
-          [cosChanged, "Certificate of Sponsorship"],
+        //
+        // Was querying employee.employee_document, a table nothing in
+        // this app writes to any more (it was the old wizard "Documents"
+        // step's table, removed elsewhere as dead code) - this check
+        // always found zero rows and blocked every Passport/Visa/CoS
+        // change unconditionally, regardless of whether real evidence
+        // had actually been uploaded through the working system. The
+        // real uploads (Passport/Visa/CoS's own "Attach Document"
+        // panels, via SupportingEvidencePanel) write to
+        // compliance.supporting_document, tagged with the exact type
+        // strings those panels pass as documentTypes - "Passport Scan",
+        // "Visa Document", "CoS Attachment" - not the human-readable
+        // labels used below for the error message.
+        for (const [changed, docType, uploadedDocumentType] of [
+          [passportChanged, "Passport", "Passport Scan"],
+          [visaChanged, "Visa", "Visa Document"],
+          [cosChanged, "Certificate of Sponsorship", "CoS Attachment"],
         ] as const) {
           if (!changed) continue;
           const recentDoc = await client.query(
-            `SELECT 1 FROM employee.employee_document d
-             WHERE d.employee_id = $1 AND d.document_type = $2
+            `SELECT 1 FROM compliance.supporting_document d
+             WHERE d.employee_id = $1 AND d.document_type = $2 AND d.status != 'Failed' AND d.deleted_at IS NULL
                AND d.created_at > (SELECT updated_at FROM employee.employee_master WHERE id = $1)
              LIMIT 1`,
-            [id, docType]
+            [id, uploadedDocumentType]
           );
           if (!recentDoc.rowCount) {
             throw new BadRequestException(`New supporting evidence must be uploaded before saving a change to ${docType}.`);
