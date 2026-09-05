@@ -140,7 +140,7 @@ export class EmployeeService {
       const [rows, count] = await Promise.all([
         client.query(
           `SELECT m.id, m.employee_reference_no, m.candidate_id_label, m.employee_id_label, m.first_name, m.middle_name, m.last_name,
-                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded,
+                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded, m.sponsored_employee, m.contract_duration,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
                      WHERE employee_id = m.id AND contact_type = 'email' AND is_primary AND NOT is_removed LIMIT 1) AS primary_email,
@@ -188,6 +188,8 @@ export class EmployeeService {
           department: r.department_name,
           recordStatus: r.record_status,
           isOnboarded: r.is_onboarded,
+          sponsoredEmployee: !!r.sponsored_employee,
+          contractDuration: r.contract_duration ?? null,
           primaryEmail: r.primary_email ?? null,
           primaryPhone: r.primary_phone ?? null,
           currentLocation: r.current_location ?? null,

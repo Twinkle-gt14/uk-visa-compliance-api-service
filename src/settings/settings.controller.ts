@@ -36,6 +36,12 @@ export class SettingsController {
 
   @Get("jurisdictions") listJurisdictions(@Req() req: Request) { return this.settingsService.listJurisdictions(req.user!.tenantId); }
 
+  // --- Notice Period ---
+  @Get("notice-periods") listNoticePeriods(@Req() req: Request) { return this.settingsService.listNoticePeriods(req.user!.tenantId); }
+  @Post("notice-periods") createNoticePeriod(@Req() req: Request, @Body() body: { name: string; noticeDays: number }) { return this.settingsService.createNoticePeriod(req.user!.tenantId, body.name, Number(body.noticeDays)); }
+  @Patch("notice-periods/:id") updateNoticePeriod(@Req() req: Request, @Param("id") id: string, @Body() body: { name: string; noticeDays: number }) { return this.settingsService.updateNoticePeriod(req.user!.tenantId, id, body.name, Number(body.noticeDays)); }
+  @Delete("notice-periods/:id") deleteNoticePeriod(@Req() req: Request, @Param("id") id: string) { return this.settingsService.deleteNoticePeriod(req.user!.tenantId, id); }
+
   // --- Holidays ---
   @Get("holidays") listHolidays(@Req() req: Request) { return this.settingsService.listHolidays(req.user!.tenantId); }
   @Post("holidays") createHoliday(@Req() req: Request, @Body() body: CreateHolidayDto) { return this.settingsService.createHoliday(req.user!.tenantId, body.date, body.name); }

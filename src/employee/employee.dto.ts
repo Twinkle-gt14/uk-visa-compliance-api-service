@@ -230,6 +230,13 @@ export interface EmployeeSummary {
   department: string;
   recordStatus: EmployeeStatus;
   isOnboarded: boolean;
+  sponsoredEmployee: boolean;
+  /** Free-text "months" figure, same field the Work Details step
+   * captures - added so Employee Contract End can compute each
+   * employee's contract end date (startDate + this many months)
+   * without a second per-record fetch. Null/empty for employees with
+   * no fixed-term contract, who correctly don't appear on that page. */
+  contractDuration: string | null;
   primaryEmail: string | null;
   primaryPhone: string | null;
   currentLocation: string | null;

@@ -70,6 +70,12 @@ export interface WorkLocationDto {
   jurisdictionName: string | null;
 }
 
+export interface NoticePeriodDto {
+  id: string;
+  name: string;
+  noticeDays: number;
+}
+
 /** Job title (`name`) plus the full role profile Candidate
  * Onboarding's Role Details step displays once a role is picked
  * from the dropdown there - see migrations 026 and 027. */

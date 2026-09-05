@@ -12,6 +12,7 @@ import type {
   EmployeeComplianceSheetDto,
   JurisdictionDto,
   WorkLocationDto,
+  NoticePeriodDto,
   RoleDto,
 } from "./settings.dto";
 
@@ -277,6 +278,72 @@ export class SettingsService {
   /** A FK violation here means something still references this row
    * (e.g. an employee assigned to this department) - a clean 409
    * explaining that, rather than a raw 500. */
+  // --- Notice Period (Settings > HR > Notice Period) ---
+  //
+  // Same bespoke-methods pattern as Work Location above (one extra
+  // column - notice_days - beyond the generic (id, name) shape the
+  // department/role/visa_type listSimple/createSimple/updateSimple
+  // helpers assume), rather than stretching those generic helpers to
+  // cover a shape they weren't built for.
+
+  async listNoticePeriods(tenantId: string): Promise<NoticePeriodDto[]> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT id, name, notice_days FROM reference.notice_period WHERE tenant_id = $1 ORDER BY created_at`,
+        [tenantId]
+      );
+      return result.rows.map((r: any) => ({ id: r.id, name: r.name, noticeDays: Number(r.notice_days) }));
+    });
+  }
+
+  async createNoticePeriod(tenantId: string, name: string, noticeDays: number): Promise<NoticePeriodDto> {
+    if (!name?.trim()) throw new BadRequestException("Name is required.");
+    if (!Number.isFinite(noticeDays) || noticeDays <= 0) throw new BadRequestException("Notice period (days) must be a positive number.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `INSERT INTO reference.notice_period (tenant_id, name, notice_days) VALUES ($1,$2,$3) RETURNING id, name, notice_days`,
+          [tenantId, name.trim(), noticeDays]
+        );
+        const r = result.rows[0];
+        return { id: r.id, name: r.name, noticeDays: Number(r.notice_days) };
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  async updateNoticePeriod(tenantId: string, id: string, name: string, noticeDays: number): Promise<NoticePeriodDto> {
+    if (!name?.trim()) throw new BadRequestException("Name is required.");
+    if (!Number.isFinite(noticeDays) || noticeDays <= 0) throw new BadRequestException("Notice period (days) must be a positive number.");
+    return withTenant(tenantId, async (client) => {
+      try {
+        const result = await client.query(
+          `UPDATE reference.notice_period SET name = $1, notice_days = $2 WHERE id = $3 AND tenant_id = $4 RETURNING id, name, notice_days`,
+          [name.trim(), noticeDays, id, tenantId]
+        );
+        if (!result.rowCount) throw new NotFoundException("Not found.");
+        const r = result.rows[0];
+        return { id: r.id, name: r.name, noticeDays: Number(r.notice_days) };
+      } catch (err: any) {
+        if (err?.code === "23505") throw new ConflictException(`"${name.trim()}" already exists.`);
+        throw err;
+      }
+    });
+  }
+
+  async deleteNoticePeriod(tenantId: string, id: string): Promise<{ id: string }> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `DELETE FROM reference.notice_period WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+        [id, tenantId]
+      );
+      if (!result.rowCount) throw new NotFoundException("Not found.");
+      return result.rows[0];
+    });
+  }
+
   async deleteSimple(tenantId: string, kind: SimpleReferenceKind, id: string): Promise<{ id: string }> {
     const table = TABLE_BY_KIND[kind];
     const label = kind.replace("_", " ");
