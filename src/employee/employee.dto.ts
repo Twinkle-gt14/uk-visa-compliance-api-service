@@ -98,6 +98,8 @@ export interface EmployeeUpsertDto {  // Personal
   nationality?: string;
   maritalStatus?: string;
   nationalInsuranceNumber?: string;
+  isUkCitizen?: string;
+  isIlrSettled?: string;
 
   // Contact (repeatable)
   emails?: EmailEntryDto[];
@@ -140,7 +142,6 @@ export interface EmployeeUpsertDto {  // Personal
   guaranteedBasicGrossPay?: string;
   jobContractFileName?: string | null;
   sponsoredEmployee?: string;
-  britishEmployee?: string;
 
   // Bank
   accountHolderName?: string;

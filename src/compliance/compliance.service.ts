@@ -945,7 +945,7 @@ export class ComplianceService {
     };
   }
 
-  async requestDocumentUpload(tenantId: string, employeeId: string, userId: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
+  async requestDocumentUpload(tenantId: string, employeeId: string, uploaderEmail: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
     if (!ALLOWED_CONTENT_TYPES.has(dto.contentType)) {
       throw new BadRequestException(`File type "${dto.contentType}" isn't allowed. Allowed types: PDF, JPG, PNG, DOCX.`);
     }
@@ -969,7 +969,7 @@ export class ComplianceService {
           (tenant_id, employee_id, document_type, description, original_filename, storage_key, content_type, size_bytes, status, uploaded_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Pending',$9)
          RETURNING id`,
-        [tenantId, employeeId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, userId || null]
+        [tenantId, employeeId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, uploaderEmail || null]
       );
 
       const uploadUrl = await getSignedUploadUrl(storageKey, dto.contentType);
@@ -1028,7 +1028,7 @@ export class ComplianceService {
   // HR-admin only at the controller level - Roles are settings-level
   // master data, not something an employee session ever touches. ---
 
-  async requestRoleDocumentUpload(tenantId: string, roleId: string, userId: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
+  async requestRoleDocumentUpload(tenantId: string, roleId: string, uploaderEmail: string | undefined, dto: RequestUploadDto): Promise<RequestUploadResponseDto> {
     if (!ALLOWED_CONTENT_TYPES.has(dto.contentType)) {
       throw new BadRequestException(`File type "${dto.contentType}" isn't allowed. Allowed types: PDF, JPG, PNG, DOCX.`);
     }
@@ -1049,7 +1049,7 @@ export class ComplianceService {
           (tenant_id, role_id, document_type, description, original_filename, storage_key, content_type, size_bytes, status, uploaded_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Pending',$9)
          RETURNING id`,
-        [tenantId, roleId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, userId || null]
+        [tenantId, roleId, dto.documentType.trim(), dto.description || null, dto.filename, storageKey, dto.contentType, dto.sizeBytes, uploaderEmail || null]
       );
 
       const uploadUrl = await getSignedUploadUrl(storageKey, dto.contentType);

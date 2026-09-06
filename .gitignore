@@ -4,3 +4,4 @@ dist/
 .env.*
 ,env.txt
 *.log
+dev-start.ps1

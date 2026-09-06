@@ -67,7 +67,6 @@ const FULL_PAYLOAD = {
   socNumber: "2136",
   jobContractFileName: "contract.pdf",
   sponsoredEmployee: "No",
-  britishEmployee: "Yes",
 
   accountHolderName: "Priya Nair",
   bankName: "Barclays",
@@ -148,7 +147,6 @@ const MINIMAL_PAYLOAD = {
   socNumber: "",
   jobContractFileName: null,
   sponsoredEmployee: "No",
-  britishEmployee: "No",
   accountHolderName: "",
   bankName: "",
   accountNumber: "",

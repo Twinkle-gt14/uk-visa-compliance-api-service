@@ -76,6 +76,9 @@ function rowToRole(r: any): RoleDto {
     businessJustification: r.business_justification,
     weeklyWorkingHours: r.weekly_working_hours,
     advertised: r.advertised,
+    socNumber: r.soc_number,
+    guaranteedBasicGrossPay: r.guaranteed_basic_gross_pay,
+    isHealthAndCareRole: r.is_health_and_care_role,
   };
 }
 
@@ -220,7 +223,7 @@ export class SettingsService {
   async listRoles(tenantId: string): Promise<RoleDto[]> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
-        `SELECT id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised
+        `SELECT id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised, soc_number, guaranteed_basic_gross_pay, is_health_and_care_role
          FROM reference.role ORDER BY name`
       );
       return result.rows.map(rowToRole);
@@ -233,13 +236,14 @@ export class SettingsService {
       try {
         const result = await client.query(
           `INSERT INTO reference.role
-             (tenant_id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised`,
+             (tenant_id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised, soc_number, guaranteed_basic_gross_pay, is_health_and_care_role)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised, soc_number, guaranteed_basic_gross_pay, is_health_and_care_role`,
           [
             tenantId, dto.name.trim(), dto.workLocation || null, dto.mainDuties || null,
             dto.requiredSkills || null, dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null,
             dto.weeklyWorkingHours || null, dto.advertised || null,
+            dto.socNumber || null, dto.guaranteedBasicGrossPay || null, dto.isHealthAndCareRole || null,
           ]
         );
         return rowToRole(result.rows[0]);
@@ -257,13 +261,15 @@ export class SettingsService {
         const result = await client.query(
           `UPDATE reference.role SET
              name = $1, work_location = $2, main_duties = $3, required_skills = $4,
-             salary_range = $5, reporting_line = $6, business_justification = $7, weekly_working_hours = $8, advertised = $9
-           WHERE id = $10
-           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised`,
+             salary_range = $5, reporting_line = $6, business_justification = $7, weekly_working_hours = $8, advertised = $9,
+             soc_number = $10, guaranteed_basic_gross_pay = $11, is_health_and_care_role = $12
+           WHERE id = $13
+           RETURNING id, name, work_location, main_duties, required_skills, salary_range, reporting_line, business_justification, weekly_working_hours, advertised, soc_number, guaranteed_basic_gross_pay, is_health_and_care_role`,
           [
             dto.name.trim(), dto.workLocation || null, dto.mainDuties || null, dto.requiredSkills || null,
             dto.salaryRange || null, dto.reportingLine || null, dto.businessJustification || null,
-            dto.weeklyWorkingHours || null, dto.advertised || null, id,
+            dto.weeklyWorkingHours || null, dto.advertised || null,
+            dto.socNumber || null, dto.guaranteedBasicGrossPay || null, dto.isHealthAndCareRole || null, id,
           ]
         );
         if (!result.rowCount) throw new NotFoundException("Not found.");

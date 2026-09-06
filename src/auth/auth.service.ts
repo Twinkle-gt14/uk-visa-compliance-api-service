@@ -16,6 +16,14 @@ export interface JwtPayload {
   tenantId: string;
   role: "hr_admin" | "employee";
   employeeId: string | null;
+  /** Added so services outside AuthService's own connection (e.g.
+   * ComplianceService recording who uploaded a document) can show a
+   * human-readable "who did this" without ever querying
+   * security.credential themselves - AuthService is the one place
+   * that's allowed to touch that table (Database Design - Common
+   * Platform Standards, Section 4.6), so it embeds the email into the
+   * token it issues instead. */
+  email: string;
   /** Unix seconds when this session was first created at login - carried
    * forward unchanged by every refresh() reissue below, so it always
    * reflects the *original* sign-in, not the most recent silent renewal.
@@ -48,7 +56,7 @@ export class AuthService {
    */
   async login(email: string, password: string): Promise<LoginResult> {
     const result = await authPool.query(
-      `SELECT id, tenant_id, password_hash, role, employee_id, must_change_password
+      `SELECT id, tenant_id, password_hash, role, employee_id, must_change_password, email
        FROM security.credential
        WHERE email = $1
        AND password_hash = crypt($2, password_hash)`,
@@ -67,6 +75,7 @@ export class AuthService {
       tenantId: row.tenant_id,
       role: row.role,
       employeeId: row.employee_id,
+      email: row.email,
       origIat: Math.floor(Date.now() / 1000),
     };
     const token = jwt.sign(payload, this.jwtSecret, { expiresIn: "15m" });
@@ -125,7 +134,7 @@ export class AuthService {
     // forcing a real re-login rather than silently keeping a deleted
     // account's session alive.
     const result = await authPool.query(
-      `SELECT tenant_id, role, employee_id FROM security.credential WHERE id = $1`,
+      `SELECT tenant_id, role, employee_id, email FROM security.credential WHERE id = $1`,
       [payload.userId]
     );
     if (result.rowCount === 0) {
@@ -138,6 +147,7 @@ export class AuthService {
       tenantId: row.tenant_id,
       role: row.role,
       employeeId: row.employee_id,
+      email: row.email,
       origIat: sessionStart,
     };
     const newToken = jwt.sign(newPayload, this.jwtSecret, { expiresIn: "15m" });

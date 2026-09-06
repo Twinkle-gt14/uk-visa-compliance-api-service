@@ -7,6 +7,12 @@ export interface AuthenticatedUser {
   tenantId: string;
   role: "hr_admin" | "employee";
   employeeId: string | null;
+  /** See JwtPayload's own comment (auth.service.ts) on why this rides
+   * along in the token itself rather than being looked up here. Falls
+   * back to "" for a token minted before this field existed - self-
+   * heals on that session's next silent refresh, which re-mints with
+   * a fresh email pulled from security.credential. */
+  email: string;
 }
 
 // Express augmentation so req.user is typed at every call site, rather
@@ -54,6 +60,7 @@ export class AuthGuard implements CanActivate {
         tenantId: string;
         role?: "hr_admin" | "employee";
         employeeId?: string | null;
+        email?: string;
       };
       // A token with no role claim used to be treated as hr_admin -
       // the more privileged role - on the theory that it could only be
@@ -77,6 +84,7 @@ export class AuthGuard implements CanActivate {
         tenantId: payload.tenantId,
         role: payload.role,
         employeeId: payload.employeeId ?? null,
+        email: payload.email ?? "",
       };
       return true;
     } catch {

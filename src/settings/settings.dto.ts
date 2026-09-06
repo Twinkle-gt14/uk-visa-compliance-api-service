@@ -78,7 +78,9 @@ export interface NoticePeriodDto {
 
 /** Job title (`name`) plus the full role profile Candidate
  * Onboarding's Role Details step displays once a role is picked
- * from the dropdown there - see migrations 026 and 027. */
+ * from the dropdown there - see migrations 026 and 027.
+ * socNumber/guaranteedBasicGrossPay/isHealthAndCareRole moved here
+ * from the old per-candidate SOC Details step - see migration 042. */
 export interface RoleDto {
   id: string;
   name: string;
@@ -90,6 +92,9 @@ export interface RoleDto {
   businessJustification: string | null;
   weeklyWorkingHours: string | null;
   advertised: string | null;
+  socNumber: string | null;
+  guaranteedBasicGrossPay: string | null;
+  isHealthAndCareRole: string | null;
 }
 
 export interface Soc2020CodeDto {

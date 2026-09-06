@@ -225,6 +225,12 @@ export interface SupportingDocumentDto {
   contentType: string;
   sizeBytes: number;
   status: DocumentStatus;
+  /** The uploader's email (JwtPayload.email at the time of upload) -
+   * not their internal user id. A document uploaded before this field
+   * existed on the JWT still holds whatever raw id was recorded then;
+   * it's a plain TEXT column, not a FK, so both forms coexist safely,
+   * but a display of "who uploaded this" for those older rows will
+   * still show a raw id until re-uploaded. */
   uploadedBy: string | null;
   uploadedAt: string | null;
   createdAt: string;

@@ -154,7 +154,12 @@ export class ComplianceController {
   @Post("documents/:employeeId/request-upload")
   requestDocumentUpload(@Req() req: Request, @Param("employeeId") employeeId: string, @Body() body: RequestUploadDto) {
     assertSelfOrHrAdmin(req.user!, employeeId);
-    return this.complianceService.requestDocumentUpload(req.user!.tenantId, employeeId, req.user!.userId, body);
+    // Records the uploader's email, not their internal user id - see
+    // JwtPayload's own comment (auth.service.ts) on why the token
+    // carries email at all: showing "who uploaded this" on the
+    // Documents tab needs to be human-readable without ComplianceService
+    // ever querying security.credential itself.
+    return this.complianceService.requestDocumentUpload(req.user!.tenantId, employeeId, req.user!.email, body);
   }
 
   // --- Role-scoped documents (Settings > Role advertisement evidence)
@@ -166,7 +171,7 @@ export class ComplianceController {
   @Post("role-documents/:roleId/request-upload")
   @UseGuards(HrAdminGuard)
   requestRoleDocumentUpload(@Req() req: Request, @Param("roleId") roleId: string, @Body() body: RequestUploadDto) {
-    return this.complianceService.requestRoleDocumentUpload(req.user!.tenantId, roleId, req.user!.userId, body);
+    return this.complianceService.requestRoleDocumentUpload(req.user!.tenantId, roleId, req.user!.email, body);
   }
 
   @Get("role-documents/:roleId")
