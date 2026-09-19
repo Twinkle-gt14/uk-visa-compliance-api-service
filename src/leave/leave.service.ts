@@ -205,11 +205,19 @@ export class LeaveService {
     return withTenant(tenantId, async (client) => {
       const leaveType = await this.resolveLeaveType(client, tenantId, dto.leaveType);
 
-      const employeeExists = await client.query(
-        "SELECT id FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+      const employeeRow = await client.query(
+        "SELECT date_of_joining FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
         [dto.employeeId]
       );
-      if (!employeeExists.rowCount) throw new NotFoundException("Employee not found.");
+      if (!employeeRow.rowCount) throw new NotFoundException("Employee not found.");
+      // date_of_joining comes back as a plain "YYYY-MM-DD" string (see
+      // db.ts's DATE type parser), so this is a safe string comparison -
+      // same rule Attendance enforces (see AttendanceService's own
+      // assertOnOrAfterJoining), applied here for leave requests.
+      const joiningDate: string | null = employeeRow.rows[0].date_of_joining;
+      if (joiningDate && dto.startDate < joiningDate) {
+        throw new BadRequestException(`Leave cannot be requested before this employee's joining date (${joiningDate}).`);
+      }
 
       const overlap = await client.query(
         `SELECT id FROM leave.leave_request

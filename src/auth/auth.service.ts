@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import * as jwt from "jsonwebtoken";
-import { authPool } from "../db";
+import { authPool, withTenant } from "../db";
 
 export interface LoginResult {
   ok: boolean;
@@ -70,6 +70,22 @@ export class AuthService {
     }
 
     const row = result.rows[0];
+
+    // Employee login only - an hr_admin session has no linked
+    // employee_id at all, and is unaffected. Only an Active employee
+    // record may sign in; Draft (mid-wizard, or a directly-added
+    // employee still pending its Right to Work check - see
+    // EmployeeService's own Draft/Active notes), Inactive and Exited
+    // are all refused. Checked via the main app_service-authenticated
+    // pool/withTenant (the same access pattern EmployeeService itself
+    // uses for employee.employee_master), not authPool - auth_service
+    // is deliberately locked out of the employee schema entirely
+    // (migration 004), so this stays a separate, narrowly-scoped query
+    // against the connection that's actually allowed to read it.
+    if (row.role === "employee" && row.employee_id && !(await this.isEmployeeActive(row.tenant_id, row.employee_id))) {
+      return { ok: false, error: "This employee record is not Active. Contact HR to reactivate it before signing in." };
+    }
+
     const payload: JwtPayload = {
       userId: row.id,
       tenantId: row.tenant_id,
@@ -142,6 +158,15 @@ export class AuthService {
     }
     const row = result.rows[0];
 
+    // Same Active-only check as login() - a session refresh is exactly
+    // the "already-live session" case that check's own comment is
+    // about: HR deactivating this employee mid-session should stop
+    // silent renewal working from that point on, not just block the
+    // next fresh sign-in.
+    if (row.role === "employee" && row.employee_id && !(await this.isEmployeeActive(row.tenant_id, row.employee_id))) {
+      return { ok: false, error: "This employee record is not Active. Contact HR to reactivate it before signing in." };
+    }
+
     const newPayload: JwtPayload = {
       userId: payload.userId,
       tenantId: row.tenant_id,
@@ -153,6 +178,22 @@ export class AuthService {
     const newToken = jwt.sign(newPayload, this.jwtSecret, { expiresIn: "15m" });
 
     return { ok: true, token: newToken, role: row.role, employeeId: row.employee_id };
+  }
+
+  /** Active-only gate for an employee-role login/refresh - see login()
+   * and refresh()'s own comments on why this goes through the main
+   * app_service pool/withTenant rather than authPool. A missing or
+   * soft-deleted row (should be unreachable in practice, since
+   * employee_id on a credential row is only ever set to a real
+   * employee) is treated as not active rather than throwing. */
+  private async isEmployeeActive(tenantId: string, employeeId: string): Promise<boolean> {
+    return withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT record_status FROM employee.employee_master WHERE id = $1 AND NOT is_deleted`,
+        [employeeId]
+      );
+      return !!result.rowCount && result.rows[0].record_status === "Active";
+    });
   }
 
   /**

@@ -100,6 +100,7 @@ export interface EmployeeUpsertDto {  // Personal
   nationalInsuranceNumber?: string;
   isUkCitizen?: string;
   isIlrSettled?: string;
+  proposedJoiningDate?: string;
 
   // Contact (repeatable)
   emails?: EmailEntryDto[];
@@ -135,6 +136,11 @@ export interface EmployeeUpsertDto {  // Personal
   socNumber?: string;
   jobDescription?: string;
   contractDuration?: string;
+  /** Computed client-side (startDate + contractDuration months) and
+   * sent along like any other field - same "system-determined, not
+   * independently editable" pattern as cosType, just computed by the
+   * frontend rather than here. */
+  contractEndDate?: string;
   currentLocation?: string;
   currentImmigrationStatus?: string;
   proposedAnnualSalary?: string;
@@ -142,6 +148,12 @@ export interface EmployeeUpsertDto {  // Personal
   guaranteedBasicGrossPay?: string;
   jobContractFileName?: string | null;
   sponsoredEmployee?: string;
+  /** "Skilled Worker Visa" / "Global Business Mobility Visa" - the
+   * intended sponsorship route, picked on Work Details as soon as a
+   * non-UK-citizen/non-ILR candidate is marked To be Sponsored. Distinct
+   * from visaType below, which is the actual granted visa recorded
+   * much later once one exists. */
+  sponsorshipVisaRoute?: string;
 
   // Bank
   accountHolderName?: string;
@@ -181,6 +193,8 @@ export interface EmployeeUpsertDto {  // Personal
   cosType?: string;
   cosGenuineVacancyConfirmed?: string;
   cosGenuineVacancyConfirmedDate?: string;
+  cosAssignedSalary?: string;
+  cosPayFrequency?: string;
   cosSponsorNote?: string;
   cosFileName?: string | null;
 

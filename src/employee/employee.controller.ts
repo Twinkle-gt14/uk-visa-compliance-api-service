@@ -38,6 +38,12 @@ export class EmployeeController {
   // 500 - this is what broke the Workflow page. Keeping these above
   // the dynamic :id routes is what makes the Workflow page's own
   // endpoint reachable at all.
+  @Get("ukvi-actions")
+  @UseGuards(HrAdminGuard)
+  listUkviActions(@Req() req: Request) {
+    return this.employeeService.listUkviActions(req.user!.tenantId);
+  }
+
   /** HR's Workflow page - every employee-submitted change awaiting a
    * decision (or, with ?status=, any other status). */
   @Get("change-requests")
@@ -73,6 +79,12 @@ export class EmployeeController {
   // viewing their own record via the self-service redirect doesn't
   // get a History tab at all, so there's no legitimate "self" case
   // to allow here the way getOne() does.
+  @Get(":id/compliance-checks")
+  @UseGuards(HrAdminGuard)
+  getComplianceChecks(@Req() req: Request, @Param("id") id: string) {
+    return this.employeeService.getSponsorComplianceChecks(req.user!.tenantId, id);
+  }
+
   @Get(":id/history")
   @UseGuards(HrAdminGuard)
   getHistory(@Req() req: Request, @Param("id") id: string) {
@@ -96,15 +108,16 @@ export class EmployeeController {
   }
 
   /** Called the moment a wizard opens, before the user has entered
-   * anything - gives document-evidence uploads a real id to attach
-   * to from step one. `id` is client-generated (see
-   * lib/*-store.ts createDraft()); `onboardedOnCreate` is still
-   * decided up front since it determines whether an Employee Number
-   * gets reserved immediately or only later via onboard(). */
+   * anything - gives document-evidence uploads a real id to attach to
+   * from step one. `id` is client-generated (see lib/*-store.ts
+   * createDraft()). Neither Candidate ID nor Employee Number is
+   * assigned here (see EmployeeService.createDraft's own comment) -
+   * both are reserved by finalize()/onboard() instead, only once the
+   * record is actually saved. */
   @Post("draft")
   @UseGuards(HrAdminGuard)
-  createDraft(@Req() req: Request, @Body() body: { id?: string; onboardedOnCreate?: boolean }) {
-    return this.employeeService.createDraft(req.user!.tenantId, body.id, !!body.onboardedOnCreate);
+  createDraft(@Req() req: Request, @Body() body: { id?: string }) {
+    return this.employeeService.createDraft(req.user!.tenantId, body.id);
   }
 
   /** HR Admin editing anyone -> applies immediately, exactly as

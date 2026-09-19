@@ -611,7 +611,7 @@ export class SettingsService {
   async listPreEmploymentValidationRules(tenantId: string): Promise<PreEmploymentValidationRuleDto[]> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
-        `SELECT id, category, rule_id, checkpoint, consequence, source
+        `SELECT id, category, rule_id, checkpoint, consequence, source, visa_type
          FROM reference.pre_employment_validation_rule
          ORDER BY category, rule_id`
       );
@@ -622,6 +622,7 @@ export class SettingsService {
         checkpoint: r.checkpoint ?? "",
         consequence: r.consequence ?? "",
         source: r.source ?? "",
+        visaType: r.visa_type ?? "",
       }));
     });
   }
@@ -664,20 +665,33 @@ export class SettingsService {
 
     return withTenant(tenantId, async (client) => {
       for (const r of validRows) {
+        const checkpoint = r.Checkpoint != null ? String(r.Checkpoint) : "";
+        // Respects an explicit "Visa Type" column in the upload when
+        // present; otherwise falls back to the same heuristic used for
+        // migration 049's one-time backfill of existing rows - "GBM"
+        // anywhere in the Checkpoint text means Global Business
+        // Mobility, everything else Skilled Worker.
+        const visaType =
+          r["Visa Type"] != null && String(r["Visa Type"]).trim()
+            ? String(r["Visa Type"]).trim()
+            : /GBM/i.test(checkpoint)
+              ? "Global Business Mobility"
+              : "Skilled Worker";
         await client.query(
           `INSERT INTO reference.pre_employment_validation_rule
-            (tenant_id, category, rule_id, checkpoint, consequence, source)
-           VALUES ($1,$2,$3,$4,$5,$6)
+            (tenant_id, category, rule_id, checkpoint, consequence, source, visa_type)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT (tenant_id, category, rule_id) DO UPDATE SET
              checkpoint = EXCLUDED.checkpoint, consequence = EXCLUDED.consequence,
-             source = EXCLUDED.source, uploaded_at = now()`,
+             source = EXCLUDED.source, visa_type = EXCLUDED.visa_type, uploaded_at = now()`,
           [
             tenantId,
             String(r.Category),
             String(r["Rule ID"]),
-            r.Checkpoint != null ? String(r.Checkpoint) : null,
+            checkpoint || null,
             r["Consequence if non-compliant"] != null ? String(r["Consequence if non-compliant"]) : null,
             r.Source != null ? String(r.Source) : null,
+            visaType,
           ]
         );
       }

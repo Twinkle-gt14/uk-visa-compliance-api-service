@@ -90,10 +90,20 @@ function assertRequiredFields(dto: EmployeeUpsertDto): void {
   if (!dto.lastName?.trim()) personalMissing.push("Last name");
   if (!dto.dateOfBirth?.trim()) personalMissing.push("Date of birth");
 
+  // Employee Register's "Add Employee" (onboardedOnCreate) requires the
+  // Actual Joining date; Candidate Onboarding's own finalize
+  // (onboardedOnCreate never set) requires the Proposed joining date
+  // instead - these are two distinct fields now (see startDate's own
+  // comment on EmployeeFormData), not one field finalized by two
+  // different callers.
   const roleMissing: string[] = [];
   if (!dto.jobTitle?.trim()) roleMissing.push("Job title");
   if (!dto.department?.trim()) roleMissing.push("Department");
-  if (!dto.startDate?.trim()) roleMissing.push("Start date");
+  if (dto.onboardedOnCreate) {
+    if (!dto.startDate?.trim()) roleMissing.push("Actual Joining date");
+  } else {
+    if (!dto.proposedJoiningDate?.trim()) roleMissing.push("Proposed joining date");
+  }
 
   const messages: string[] = [];
   if (personalMissing.length) messages.push(`Personal - Missing required field(s): ${personalMissing.join(", ")}`);
@@ -148,11 +158,25 @@ export class EmployeeService {
       const params = onboarded === undefined ? [pageSize, offset] : [pageSize, offset, onboarded];
       const countClause = onboarded === undefined ? "" : "AND is_onboarded = $1";
       const countParams = onboarded === undefined ? [] : [onboarded];
+      // Employee Register (onboarded=true) wants to see its own Draft
+      // rows too - a directly-added employee finalize() held at Draft
+      // pending Pre-Hire Compliance (see update()'s own comment on the
+      // Draft -> Active promotion) still needs to be visible there so
+      // HR can find and complete it, just labelled "Draft" rather than
+      // silently missing. A genuinely still-being-filled-in wizard
+      // draft never reaches here either way, since is_onboarded only
+      // becomes true once finalize() actually runs. Candidate
+      // Onboarding and every other caller (onboarded=false/undefined)
+      // keeps excluding Draft - those are real works-in-progress, not
+      // finished records pending a check.
+      const excludeDraftClause = onboarded === true ? "" : "AND m.record_status != 'Draft'";
+      const excludeDraftCountClause = onboarded === true ? "" : "AND record_status != 'Draft'";
 
       const [rows, count] = await Promise.all([
         client.query(
           `SELECT m.id, m.employee_reference_no, m.candidate_id_label, m.employee_id_label, m.first_name, m.middle_name, m.last_name,
-                  m.job_title, m.record_status, m.date_of_joining, m.current_location, m.photo_file_reference, m.is_onboarded, m.sponsored_employee, m.contract_duration,
+                  m.job_title, m.record_status, m.date_of_joining, m.proposed_joining_date, m.current_location, m.photo_file_reference, m.is_onboarded, m.sponsored_employee, m.contract_duration,
+                  m.is_uk_citizen, m.is_ilr_settled,
                   d.name AS department_name,
                   (SELECT value FROM employee.employee_contact_detail
                      WHERE employee_id = m.id AND contact_type = 'email' AND is_primary AND NOT is_removed LIMIT 1) AS primary_email,
@@ -178,13 +202,13 @@ export class EmployeeService {
                    ) r) AS rtw
            FROM employee.employee_master m
            JOIN reference.department d ON d.id = m.department_id
-           WHERE NOT m.is_deleted AND m.record_status != 'Draft' ${onboardedClause}
+           WHERE NOT m.is_deleted ${excludeDraftClause} ${onboardedClause}
            ORDER BY m.created_at DESC
            LIMIT $1 OFFSET $2`,
           params
         ),
         client.query(
-          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted AND record_status != 'Draft' ${countClause}`,
+          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted ${excludeDraftCountClause} ${countClause}`,
           countParams
         ),
       ]);
@@ -206,6 +230,7 @@ export class EmployeeService {
           primaryPhone: r.primary_phone ?? null,
           currentLocation: r.current_location ?? null,
           startDate: toDateStr(r.date_of_joining) || null,
+          proposedJoiningDate: toDateStr(r.proposed_joining_date) || null,
           photoFileName: r.photo_file_reference ?? null,
           complianceChecks: EmployeeService.buildComplianceChecks(r),
         })),
@@ -220,26 +245,37 @@ export class EmployeeService {
    * whatever's actually on file - no fabricated dates or reviewers.
    * "Completed" only fires once the record actually holds a real
    * decision/outcome, not just because a row exists (a half-filled
-   * CoS/Visa record is still "In Progress"). */
+   * CoS/Visa record is still "In Progress").
+   *
+   * A UK citizen or someone with ILR/Settled Status is exempt from
+   * Sponsorship Assessment, CoS and Visa entirely (see WorkStep's own
+   * exemptFromSponsorship) - those three are reported as "Completed"
+   * for them regardless of whether any record exists, so Right to Work
+   * alone gates their readiness to onboard (hasPassedCompliance
+   * requires every check "Completed") rather than leaving them stuck
+   * forever on checks that will never apply to them. */
   private static buildComplianceChecks(r: any): EmployeeSummary["complianceChecks"] {
+    const exempt = r.is_uk_citizen === true || r.is_ilr_settled === true;
     const assessment = r.latest_assessment;
     const cos = r.cos;
     const visa = r.visa;
     const rtw = r.rtw;
 
-    const assessmentStatus = !assessment ? "Not Started" : assessment.decision ? "Completed" : "In Progress";
-    const cosStatus =
-      !cos || (!cos.licence_number && !cos.sponsor_name && !cos.certificate_number)
-        ? "Not Started"
-        : cos.certificate_number && cos.assigned_date && cos.expiry_date
-        ? "Completed"
-        : "In Progress";
-    const visaStatus =
-      !visa || (!visa.visa_type && !visa.visa_number)
-        ? "Not Started"
-        : visa.visa_type && visa.visa_number && visa.expiry_date
-        ? "Completed"
-        : "In Progress";
+    const assessmentStatus = exempt ? "Completed" : !assessment ? "Not Started" : assessment.decision ? "Completed" : "In Progress";
+    const cosStatus = exempt
+      ? "Completed"
+      : !cos || (!cos.licence_number && !cos.sponsor_name && !cos.certificate_number)
+      ? "Not Started"
+      : cos.certificate_number && cos.assigned_date && cos.expiry_date
+      ? "Completed"
+      : "In Progress";
+    const visaStatus = exempt
+      ? "Completed"
+      : !visa || (!visa.visa_type && !visa.visa_number)
+      ? "Not Started"
+      : visa.visa_type && visa.visa_number && visa.expiry_date
+      ? "Completed"
+      : "In Progress";
     // "Approved"/"Pending"/"Rejected" (status) has no UI control that
     // ever sets it - statutory_excuse_established (Yes/No) is the
     // field the Right to Work form actually captures, so that's what
@@ -369,6 +405,7 @@ export class EmployeeService {
       reportingManager: m.reporting_manager_name ?? "",
       employmentType: m.employment_type ?? "",
       startDate: toDateStr(m.date_of_joining),
+      proposedJoiningDate: toDateStr(m.proposed_joining_date),
       workLocation: m.work_location ?? "",
       workTiming: m.work_timing ?? "",
       standardHoursPerWeek: m.standard_hours_per_week?.toString() ?? "",
@@ -376,6 +413,7 @@ export class EmployeeService {
       socNumber: m.soc_number ?? "",
       jobDescription: m.job_description ?? "",
       contractDuration: m.contract_duration ?? "",
+      contractEndDate: toDateStr(m.contract_end_date),
       currentLocation: m.current_location ?? "",
       currentImmigrationStatus: m.current_immigration_status ?? "",
       rtwEngagementType: m.rtw_engagement_type ?? "",
@@ -384,6 +422,7 @@ export class EmployeeService {
       guaranteedBasicGrossPay: m.guaranteed_basic_gross_pay ?? "",
       jobContractFileName: m.job_contract_file_reference,
       sponsoredEmployee: m.sponsored_employee ? "Yes" : "No",
+      sponsorshipVisaRoute: m.sponsorship_visa_route ?? "",
 
       accountHolderName: b?.account_holder_name ?? "",
       bankName: b?.bank_name ?? "",
@@ -426,6 +465,8 @@ export class EmployeeService {
       cosType: c?.cos_type ?? "",
       cosGenuineVacancyConfirmed: c?.genuine_vacancy_confirmed ?? "",
       cosGenuineVacancyConfirmedDate: toDateStr(c?.genuine_vacancy_confirmed_date),
+      cosAssignedSalary: c?.cos_assigned_salary ?? "",
+      cosPayFrequency: c?.cos_pay_frequency ?? "",
       cosSponsorNote: c?.sponsor_note ?? "",
       cosFileName: c?.file_reference ?? null,
 
@@ -465,25 +506,23 @@ export class EmployeeService {
    * it in - see migrations/023_employee_draft_support.sql for why
    * that's allowed at the DB level now.
    *
-   * Neither employee_id_label nor candidate_id_label is reserved here
-   * for `onboardedOnCreate` (Employee Register's "Add Employee") -
-   * both used to be assigned immediately on draft creation, before the
-   * record even had a name on it, and shown as "read-only, already
-   * assigned" fields the whole way through the wizard. Employee ID is
-   * now generated by finalize() instead, on the actual click of Save -
-   * candidate_id_label is skipped entirely for this flow since a
-   * directly-added employee was never a candidate. Candidate
-   * Onboarding's own drafts (onboardedOnCreate false) are unaffected:
-   * candidate_id_label is still reserved immediately, same as before. */
-  async createDraft(tenantId: string, clientId: string | undefined, onboardedOnCreate: boolean): Promise<{ id: string }> {
+   * Neither employee_id_label nor candidate_id_label is reserved here,
+   * for either flow - both used to be assigned immediately on draft
+   * creation, before the record even had a name on it, which burns a
+   * sequence number on every abandoned draft (someone opens Add
+   * Candidate/Add Employee and never finishes) as well as - in local
+   * dev specifically - every double-fired React Strict Mode mount.
+   * Both are generated by finalize() instead, on the actual click of
+   * Save, so a number is only ever spent on a record that actually
+   * gets saved. */
+  async createDraft(tenantId: string, clientId: string | undefined): Promise<{ id: string }> {
     return withTenant(tenantId, async (client) => {
-      const candidateIdLabel = onboardedOnCreate ? null : await nextSequenceNumber(client, tenantId, "candidate_id", "C", 6);
       const result = await client.query(
         `INSERT INTO employee.employee_master
-          (id, tenant_id, employee_reference_no, record_status, is_onboarded, candidate_id_label)
-         VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, 'Draft', false, $4)
+          (id, tenant_id, employee_reference_no, record_status, is_onboarded)
+         VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, 'Draft', false)
          RETURNING id`,
-        [clientId ?? null, tenantId, genRef(), candidateIdLabel]
+        [clientId ?? null, tenantId, genRef()]
       );
       return { id: result.rows[0].id };
     });
@@ -499,7 +538,7 @@ export class EmployeeService {
     assertRequiredFields(dto);
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
-        "SELECT record_status, employee_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        "SELECT record_status, employee_id_label, candidate_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
         [id]
       );
       if (!existing.rowCount) throw new NotFoundException("Employee not found.");
@@ -511,17 +550,36 @@ export class EmployeeService {
       const niEncrypted = await encrypt(client, dto.nationalInsuranceNumber);
       const niHash = await hmacHash(client, dto.nationalInsuranceNumber);
 
-      // Employee Register's "Add Employee" flow (onboardedOnCreate) no
-      // longer reserves an Employee Number at draft-creation time (see
-      // createDraft) - it's assigned here instead, on the click of
-      // Save, and only if createDraft hadn't already set one some other
-      // way. Candidate Onboarding's own finalize() never sets
-      // onboardedOnCreate, so employee_id_label stays null for it, same
-      // as before.
+      // Neither id is reserved at draft-creation time any more (see
+      // createDraft's own comment) - both are assigned here instead, on
+      // the click of Save, each only if not already set (idempotent
+      // against a retried finalize). Employee Register's "Add Employee"
+      // flow (onboardedOnCreate) gets an Employee Number; Candidate
+      // Onboarding's own finalize (onboardedOnCreate never set) gets a
+      // Candidate ID instead - never both, since a record is either a
+      // candidate or a directly-added employee, not both at once.
       const employeeIdLabel =
         dto.onboardedOnCreate && !existing.rows[0].employee_id_label
           ? await nextSequenceNumber(client, tenantId, "employee_number", "E", 6)
           : existing.rows[0].employee_id_label;
+      const candidateIdLabel =
+        !dto.onboardedOnCreate && !existing.rows[0].candidate_id_label
+          ? await nextSequenceNumber(client, tenantId, "candidate_id", "C", 6)
+          : existing.rows[0].candidate_id_label;
+
+      // Employee Register's "Add Employee" (onboardedOnCreate) skips
+      // Candidate Onboarding's own pre-hire pipeline entirely, so
+      // nothing has verified this person's Right to Work yet by the
+      // time they hit Save here - finalizing straight to Active would
+      // let them go live with zero pre-employment checks done. Holding
+      // at Draft until Pre-Hire Compliance is complete (RTW is the only
+      // check type with real persisted state today, see the comment on
+      // PreEmploymentChecksTab) forces that gap to be closed via
+      // update() below, which promotes Draft -> Active the moment an
+      // RTW check lands. Candidate Onboarding's own finalize (never
+      // onboardedOnCreate) already went through that pipeline - always
+      // Active here, unaffected by this gate.
+      const recordStatus = dto.onboardedOnCreate && !(dto.rtwChecks?.length) ? "Draft" : "Active";
 
       try {
         await client.query(
@@ -533,8 +591,9 @@ export class EmployeeService {
              date_of_joining=$20, reporting_manager_name=$21, photo_file_reference=$22, hourly_rate=$23,
              job_description=$24, contract_duration=$25, current_location=$26, current_immigration_status=$27,
              proposed_annual_salary=$28, rtw_engagement_type=$29, salary_offered=$30, guaranteed_basic_gross_pay=$31,
-             is_uk_citizen=$32, is_ilr_settled=$33, employee_id_label=$34, is_onboarded=$35, record_status='Active', updated_at=now()
-           WHERE id=$36`,
+             is_uk_citizen=$32, is_ilr_settled=$33, employee_id_label=$34, candidate_id_label=$35, is_onboarded=$36,
+             proposed_joining_date=$37, sponsorship_visa_route=$38, record_status=$39, contract_end_date=$40, updated_at=now()
+           WHERE id=$41`,
           [
             dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
             dto.gender || null, dto.maritalStatus || null, dto.nationality || null, niEncrypted, niHash,
@@ -552,7 +611,12 @@ export class EmployeeService {
             dto.isUkCitizen !== "No",
             dto.isIlrSettled === "Yes",
             employeeIdLabel,
+            candidateIdLabel,
             !!dto.onboardedOnCreate || employeeIdLabel != null,
+            dto.proposedJoiningDate || null,
+            dto.sponsorshipVisaRoute || null,
+            recordStatus,
+            dto.contractEndDate || null,
             id,
           ]
         );
@@ -611,8 +675,9 @@ export class EmployeeService {
              project_work_branch, sponsored_employee, employee_id_label, candidate_id_label,
              job_contract_file_reference, date_of_joining, reporting_manager_name, photo_file_reference, hourly_rate,
              job_description, contract_duration, current_location, current_immigration_status, proposed_annual_salary,
-             is_onboarded, salary_offered, guaranteed_basic_gross_pay, is_uk_citizen, is_ilr_settled)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
+             is_onboarded, salary_offered, guaranteed_basic_gross_pay, is_uk_citizen, is_ilr_settled, proposed_joining_date,
+             sponsorship_visa_route, contract_end_date)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
            RETURNING id`,
           [
             tenantId, genRef(), dto.firstName, dto.middleName || null, dto.lastName, dto.dateOfBirth || null,
@@ -630,6 +695,9 @@ export class EmployeeService {
             dto.guaranteedBasicGrossPay || null,
             dto.isUkCitizen !== "No",
             dto.isIlrSettled === "Yes",
+            dto.proposedJoiningDate || null,
+            dto.sponsorshipVisaRoute || null,
+            dto.contractEndDate || null,
           ]
         );
         masterId = result.rows[0].id;
@@ -688,7 +756,8 @@ export class EmployeeService {
     { key: "projectWorkBranch", label: "Project / Work / Branch", category: "Work Details" },
     { key: "reportingManager", label: "Reporting Manager", category: "Work Details" },
     { key: "employmentType", label: "Employment Type", category: "Work Details" },
-    { key: "startDate", label: "Joining Date", category: "Work Details" },
+    { key: "startDate", label: "Actual Joining Date", category: "Work Details" },
+    { key: "proposedJoiningDate", label: "Proposed Joining Date", category: "Work Details" },
     { key: "workLocation", label: "Work Location", category: "Work Details" },
     { key: "workTiming", label: "Work Timing", category: "Work Details" },
     { key: "standardHoursPerWeek", label: "Weekly Working Hours", category: "Work Details" },
@@ -696,6 +765,7 @@ export class EmployeeService {
     { key: "socNumber", label: "SOC Number", category: "Work Details" },
     { key: "jobDescription", label: "Job Description", category: "Work Details" },
     { key: "contractDuration", label: "Contract Duration", category: "Work Details" },
+    { key: "contractEndDate", label: "Contract End Date", category: "Work Details" },
     { key: "currentLocation", label: "Current Location", category: "Work Details" },
     { key: "currentImmigrationStatus", label: "Current Immigration Status", category: "Work Details" },
     { key: "rtwEngagementType", label: "RTW Engagement Type", category: "Work Details" },
@@ -710,6 +780,7 @@ export class EmployeeService {
     // history since it isn't gated by the pending-approval workflow
     // the way the rest of Work Details is; revisit if that changes.
     { key: "sponsoredEmployee", label: "To be Sponsored", category: "Work Details" },
+    { key: "sponsorshipVisaRoute", label: "Sponsorship Visa Route", category: "Work Details" },
     { key: "accountHolderName", label: "Account Holder Name", category: "Bank Details" },
     { key: "bankName", label: "Bank Name", category: "Bank Details" },
     { key: "accountNumber", label: "Account Number", category: "Bank Details", sensitive: true },
@@ -733,6 +804,8 @@ export class EmployeeService {
     { key: "cosType", label: "CoS Type", category: "CoS" },
     { key: "cosGenuineVacancyConfirmed", label: "Genuine Vacancy Confirmed", category: "CoS" },
     { key: "cosGenuineVacancyConfirmedDate", label: "Genuine Vacancy Confirmed Date", category: "CoS" },
+    { key: "cosAssignedSalary", label: "CoS Assigned Salary", category: "CoS" },
+    { key: "cosPayFrequency", label: "Pay Frequency", category: "CoS" },
     { key: "cosSponsorNote", label: "Remarks", category: "CoS" },
   ];
 
@@ -858,7 +931,7 @@ export class EmployeeService {
   async update(tenantId: string, id: string, dto: Partial<EmployeeUpsertDto>, changedBy?: string): Promise<{ id: string }> {
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
-        "SELECT id, record_status FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+        "SELECT id, record_status, employee_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
         [id]
       );
       if (!existing.rowCount) throw new NotFoundException("Employee not found.");
@@ -895,6 +968,16 @@ export class EmployeeService {
           (dto.cosCertificateNumber !== undefined && dto.cosCertificateNumber !== oldData.cosCertificateNumber) ||
           (dto.cosExpiryDate !== undefined && dto.cosExpiryDate !== oldData.cosExpiryDate);
 
+        // Only a genuine *edit* of an already-populated section counts -
+        // first-time entry into fields that were blank before this save
+        // (typical for a record finalized without every section filled
+        // in, e.g. one added straight into Employee Register) isn't
+        // "changing" existing evidence, so it's exempt below regardless
+        // of whether a document happens to exist yet.
+        const passportHadValue = !!oldData.passportNumber?.trim() || !!oldData.passportExpiryDate?.trim();
+        const visaHadValue = !!oldData.visaType?.trim() || !!oldData.visaNumber?.trim() || !!oldData.visaExpiryDate?.trim();
+        const cosHadValue = !!oldData.cosCertificateNumber?.trim() || !!oldData.cosExpiryDate?.trim();
+
         // "New evidence" = a document of the matching type uploaded
         // since this record's own last save - not just any document
         // of that type ever on file, which could just be the old one.
@@ -911,12 +994,24 @@ export class EmployeeService {
         // strings those panels pass as documentTypes - "Passport Scan",
         // "Visa Document", "CoS Attachment" - not the human-readable
         // labels used below for the error message.
-        for (const [changed, docType, uploadedDocumentType] of [
-          [passportChanged, "Passport", "Passport Scan"],
-          [visaChanged, "Visa", "Visa Document"],
-          [cosChanged, "Certificate of Sponsorship", "CoS Attachment"],
+        for (const [changed, hadValue, docType, uploadedDocumentType] of [
+          [passportChanged, passportHadValue, "Passport", "Passport Scan"],
+          [visaChanged, visaHadValue, "Visa", "Visa Document"],
+          [cosChanged, cosHadValue, "Certificate of Sponsorship", "CoS Attachment"],
         ] as const) {
-          if (!changed) continue;
+          if (!changed || !hadValue) continue;
+
+          // No evidence of this type was ever attached in the first
+          // place - nothing to require a fresher copy of, so this
+          // change goes through without the check either.
+          const existingDoc = await client.query(
+            `SELECT 1 FROM compliance.supporting_document d
+             WHERE d.employee_id = $1 AND d.document_type = $2 AND d.status != 'Failed' AND d.deleted_at IS NULL
+             LIMIT 1`,
+            [id, uploadedDocumentType]
+          );
+          if (!existingDoc.rowCount) continue;
+
           const recentDoc = await client.query(
             `SELECT 1 FROM compliance.supporting_document d
              WHERE d.employee_id = $1 AND d.document_type = $2 AND d.status != 'Failed' AND d.deleted_at IS NULL
@@ -965,6 +1060,7 @@ export class EmployeeService {
       if (dto.socNumber !== undefined) set("soc_number", dto.socNumber || null);
       if (dto.jobDescription !== undefined) set("job_description", dto.jobDescription || null);
       if (dto.contractDuration !== undefined) set("contract_duration", dto.contractDuration || null);
+      if (dto.contractEndDate !== undefined) set("contract_end_date", dto.contractEndDate || null);
       if (dto.currentLocation !== undefined) set("current_location", dto.currentLocation || null);
       if (dto.currentImmigrationStatus !== undefined) set("current_immigration_status", dto.currentImmigrationStatus || null);
       if (dto.rtwEngagementType !== undefined) set("rtw_engagement_type", dto.rtwEngagementType || null);
@@ -973,6 +1069,7 @@ export class EmployeeService {
       if (dto.guaranteedBasicGrossPay !== undefined) set("guaranteed_basic_gross_pay", dto.guaranteedBasicGrossPay || null);
       if (dto.projectWorkBranch !== undefined) set("project_work_branch", dto.projectWorkBranch || null);
       if (dto.sponsoredEmployee !== undefined) set("sponsored_employee", dto.sponsoredEmployee === "Yes");
+      if (dto.sponsorshipVisaRoute !== undefined) set("sponsorship_visa_route", dto.sponsorshipVisaRoute || null);
       // employee_id_label is intentionally not settable here either -
       // generated once (either on create() for a direct Employee
       // Register add, or on onboardEmployee() for a candidate being
@@ -981,9 +1078,20 @@ export class EmployeeService {
       // generated once on create() and never changes afterwards.
       if (dto.jobContractFileName !== undefined) set("job_contract_file_reference", dto.jobContractFileName);
       if (dto.startDate !== undefined) {
-        if (!isDraft && !dto.startDate.trim()) throw new BadRequestException("Start date cannot be cleared - it's a required field.");
+        // Only "required" once it's actually been set - Candidate
+        // Onboarding never populates startDate at all (it uses
+        // proposedJoiningDate instead, see that field's own comment),
+        // so oldData.startDate is always blank there; without this
+        // guard, saving any step of an Active candidate's record sent
+        // startDate: "" right back and tripped this unconditionally.
+        // Employee Register still can't blank it out again once a real
+        // Actual Joining date has been recorded.
+        if (!isDraft && !dto.startDate.trim() && oldData.startDate?.trim()) {
+          throw new BadRequestException("Start date cannot be cleared - it's a required field.");
+        }
         set("date_of_joining", dto.startDate || null);
       }
+      if (dto.proposedJoiningDate !== undefined) set("proposed_joining_date", dto.proposedJoiningDate || null);
       if (dto.reportingManager !== undefined) set("reporting_manager_name", dto.reportingManager || null);
       if (dto.photoFileName !== undefined) set("photo_file_reference", dto.photoFileName);
       if (dto.hourlyRate !== undefined) set("hourly_rate", dto.hourlyRate ? Number(dto.hourlyRate) : null);
@@ -1002,6 +1110,26 @@ export class EmployeeService {
       }
 
       await this.writeChildRecords(client, tenantId, id, dto);
+
+      // A directly-added employee (Employee Register's "Add Employee",
+      // not a Candidate Onboarding wizard still mid-flow) held back at
+      // Draft by finalize() below because Pre-Hire Compliance wasn't
+      // done yet - promote to Active the moment it is. RTW is the only
+      // pre-employment check type with real persisted state today (see
+      // PreEmploymentChecksTab's own comment on the others), so "done"
+      // means at least one RTW check now on file.
+      if (isDraft && existing.rows[0].employee_id_label) {
+        const rtwExists = await client.query(
+          "SELECT 1 FROM employee.employee_rtw_check WHERE employee_id = $1 LIMIT 1",
+          [id]
+        );
+        if (rtwExists.rowCount) {
+          await client.query(
+            "UPDATE employee.employee_master SET record_status='Active', updated_at=now() WHERE id=$1",
+            [id]
+          );
+        }
+      }
 
       if (!isDraft && oldData) {
         await this.logFieldChanges(client, tenantId, id, oldData, dto, changedBy);
@@ -1203,6 +1331,270 @@ export class EmployeeService {
     });
 
     return { id: requestId };
+  }
+
+  /** Live UKVI reporting events across every Active sponsored
+   * employee/candidate, one record per event, under five scenarios
+   * (see UKVI_SCENARIOS on the front-end). Deadline is 10 working days
+   * from the event. There's no stored "already reported" flag yet, so
+   * nothing is ever "Reported", and change-based events (role/location)
+   * only look back CHANGE_LOOKBACK_DAYS so old changes don't sit
+   * Overdue forever. */
+  async listUkviActions(tenantId: string) {
+    const ABSENCE_THRESHOLD = 10;
+    const NO_SHOW_DAYS = 28;
+    const CHANGE_LOOKBACK_DAYS = 60;
+    const SCENARIOS = {
+      absence: "Worker absent from work without permission for more than 10 consecutive working days",
+      noShow: "CoS Assigned - Employee fails to start (no show)",
+      pay: "Worker's salary or pay drops below the level stated on their CoS",
+      role: "Significant change to job role, title, core duties, or a promotion",
+      location: "Worker's normal work location changes from what is recorded on the CoS",
+    };
+    return withTenant(tenantId, async (client) => {
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const num = (v: unknown) => {
+        const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""));
+        return String(v ?? "").trim() && Number.isFinite(n) ? n : null;
+      };
+
+      const [emps, att, hol, hist] = await Promise.all([
+        client.query(
+          `SELECT m.id, m.first_name, m.middle_name, m.last_name, m.job_title, m.is_onboarded, m.date_of_joining,
+                  m.salary_offered, d.name AS department_name, c.assigned_date, c.cos_assigned_salary
+           FROM employee.employee_master m
+           LEFT JOIN reference.department d ON d.id = m.department_id
+           LEFT JOIN employee.employee_cos_detail c ON c.employee_id = m.id
+           WHERE NOT m.is_deleted AND m.record_status = 'Active' AND m.sponsored_employee = true`
+        ),
+        client.query("SELECT employee_id, record_date, status FROM attendance.attendance_record"),
+        client.query("SELECT holiday_date FROM reference.holiday"),
+        client.query(
+          `SELECT employee_id, field_label, changed_at FROM employee.employee_change_history
+           WHERE field_label = ANY($1) AND changed_at >= now() - ($2 || ' days')::interval`,
+          [["Job Title", "Job Description", "Department", "SOC Number", "Work Location", "Work Timing", "Project / Work / Branch", "Weekly Working Hours", "Salary Offered", "CoS Assigned Salary"], String(CHANGE_LOOKBACK_DAYS)]
+        ),
+      ]);
+
+      const holidays = new Set(hol.rows.map((r) => toDateStr(r.holiday_date)));
+      const isWorkingDay = (d: Date) => d.getUTCDay() !== 0 && d.getUTCDay() !== 6 && !holidays.has(iso(d));
+      const addWorkingDays = (from: string, n: number) => {
+        const d = new Date(from + "T00:00:00Z");
+        let left = n;
+        while (left > 0) {
+          d.setUTCDate(d.getUTCDate() + 1);
+          if (isWorkingDay(d)) left -= 1;
+        }
+        return iso(d);
+      };
+      const today = iso(new Date());
+      const todayMs = new Date(today + "T00:00:00Z").getTime();
+
+      const attByEmp = new Map<string, Map<string, string>>();
+      for (const r of att.rows) {
+        if (!attByEmp.has(r.employee_id)) attByEmp.set(r.employee_id, new Map());
+        attByEmp.get(r.employee_id)!.set(toDateStr(r.record_date), r.status);
+      }
+      const histByEmp = new Map<string, { label: string; at: string }[]>();
+      for (const r of hist.rows) {
+        if (!histByEmp.has(r.employee_id)) histByEmp.set(r.employee_id, []);
+        histByEmp.get(r.employee_id)!.push({ label: r.field_label, at: new Date(r.changed_at).toISOString().slice(0, 10) });
+      }
+
+      const records: {
+        id: string; recordId: string; isOnboarded: boolean; employeeName: string; department: string; jobTitle: string;
+        scenario: string; eventDate: string; reportingDeadline: string; status: "Overdue" | "Due Soon"; daysLeft: number;
+      }[] = [];
+
+      for (const e of emps.rows) {
+        const base = {
+          recordId: e.id as string,
+          isOnboarded: !!e.is_onboarded,
+          employeeName: [e.first_name, e.middle_name, e.last_name].filter(Boolean).join(" "),
+          department: (e.department_name ?? "") as string,
+          jobTitle: (e.job_title ?? "") as string,
+        };
+        const push = (scenario: string, eventDate: string, key: string) => {
+          const reportingDeadline = addWorkingDays(eventDate, 10);
+          const daysLeft = Math.round((new Date(reportingDeadline + "T00:00:00Z").getTime() - todayMs) / 86400000);
+          records.push({ ...base, id: `${e.id}:${key}`, scenario, eventDate, reportingDeadline, status: daysLeft < 0 ? "Overdue" : "Due Soon", daysLeft });
+        };
+
+        // 1. consecutive unauthorised working days
+        const joining = e.date_of_joining ? toDateStr(e.date_of_joining) : null;
+        if (joining && joining <= today) {
+          const status = attByEmp.get(e.id) ?? new Map<string, string>();
+          let run = 0;
+          let runStart = "";
+          let flagged = false;
+          for (let d = new Date(joining + "T00:00:00Z"); iso(d) <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+            if (!isWorkingDay(d)) continue;
+            const st = status.get(iso(d));
+            if (!st || st === "absent") {
+              if (run === 0) { runStart = iso(d); flagged = false; }
+              run += 1;
+              if (run === ABSENCE_THRESHOLD + 1 && !flagged) { push(SCENARIOS.absence, iso(d), `absence:${runStart}`); flagged = true; }
+            } else {
+              run = 0;
+            }
+          }
+        }
+
+        // 2. CoS assigned, not started
+        const assigned = e.assigned_date ? toDateStr(e.assigned_date) : null;
+        if (assigned && (!joining || joining > today)) {
+          const event = iso(new Date(new Date(assigned + "T00:00:00Z").getTime() + NO_SHOW_DAYS * 86400000));
+          if (event <= today) push(SCENARIOS.noShow, event, "noshow");
+        }
+
+        // 3. salary below CoS salary
+        const salary = num(e.salary_offered);
+        const cosSalary = num(e.cos_assigned_salary);
+        const changes = histByEmp.get(e.id) ?? [];
+        if (salary !== null && cosSalary !== null && salary < cosSalary) {
+          const payChanges = changes.filter((c) => c.label === "Salary Offered" || c.label === "CoS Assigned Salary").map((c) => c.at).sort();
+          push(SCENARIOS.pay, payChanges.length ? payChanges[payChanges.length - 1] : today, "pay");
+        }
+
+        // 4/5. role and location changes (one event per change date)
+        const seen = new Set<string>();
+        for (const c of changes) {
+          const kind = ["Job Title", "Job Description", "Department", "SOC Number"].includes(c.label) ? "role"
+            : ["Work Location", "Work Timing", "Project / Work / Branch", "Weekly Working Hours"].includes(c.label) ? "location" : null;
+          if (!kind || seen.has(kind + c.at)) continue;
+          seen.add(kind + c.at);
+          push(kind === "role" ? SCENARIOS.role : SCENARIOS.location, c.at, `${kind}:${c.at}`);
+        }
+      }
+
+      return records.sort((a, b) => a.reportingDeadline.localeCompare(b.reportingDeadline));
+    });
+  }
+
+  /** Auto-computed status text for three Sponsor Employee Compliance
+   * checkpoints (see EmployeeComplianceChecklist). Each result is
+   * { flagged, text } - flagged=true means the checkpoint has been
+   * triggered. Absence: a working day (Mon-Fri, not a reference.holiday,
+   * on/after joining, up to today) with no attendance entry, or an
+   * 'absent' one, counts as unauthorised - present/remote/leave/
+   * sick-leave do not. Salary: employee_master.salary_offered vs the
+   * CoS's own cos_assigned_salary. Role: Work Details history rows for
+   * job title/description/department/SOC. */
+  async getSponsorComplianceChecks(tenantId: string, employeeId: string) {
+    return withTenant(tenantId, async (client) => {
+      const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
+      const pretty = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+      const num = (v: unknown) => {
+        const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""));
+        return String(v ?? "").trim() && Number.isFinite(n) ? n : null;
+      };
+
+      const [emp, cos, att, hol, hist, rtwRows, locHist] = await Promise.all([
+        client.query("SELECT date_of_joining, salary_offered FROM employee.employee_master WHERE id = $1", [employeeId]),
+        client.query("SELECT cos_assigned_salary, cos_pay_frequency FROM employee.employee_cos_detail WHERE employee_id = $1", [employeeId]),
+        client.query("SELECT record_date, status FROM attendance.attendance_record WHERE employee_id = $1", [employeeId]),
+        client.query("SELECT holiday_date FROM reference.holiday"),
+        client.query(
+          `SELECT field_label, old_value, new_value, changed_at FROM employee.employee_change_history
+           WHERE employee_id = $1 AND field_label = ANY($2) ORDER BY changed_at DESC`,
+          [employeeId, ["Job Title", "Job Description", "Department", "SOC Number"]]
+        ),
+        client.query(
+          `SELECT check_method, date_of_check, checked_by_name, status, expiry_date, rtw_reference, share_code
+           FROM employee.employee_rtw_check WHERE employee_id = $1 ORDER BY date_of_check DESC NULLS LAST`,
+          [employeeId]
+        ),
+        client.query(
+          `SELECT field_label, old_value, new_value, changed_at FROM employee.employee_change_history
+           WHERE employee_id = $1 AND field_label = ANY($2) ORDER BY changed_at DESC`,
+          [employeeId, ["Work Location", "Work Timing", "Project / Work / Branch", "Weekly Working Hours"]]
+        ),
+      ]);
+      const e = emp.rows[0];
+      if (!e) throw new NotFoundException("Employee not found.");
+
+      // A) consecutive unauthorised working days
+      const joining = e.date_of_joining ? toDateStr(e.date_of_joining) : null;
+      let absence: { flagged: boolean; text: string };
+      if (!joining) {
+        absence = { flagged: false, text: "Joining date not recorded - attendance can't be assessed." };
+      } else {
+        const holidays = new Set(hol.rows.map((r) => toDateStr(r.holiday_date)));
+        const status = new Map(att.rows.map((r) => [toDateStr(r.record_date), r.status as string]));
+        const runs: { from: string; to: string; days: number }[] = [];
+        let run: { from: string; to: string; days: number } | null = null;
+        const today = fmtDate(new Date());
+        for (let d = new Date(joining + "T00:00:00Z"); fmtDate(d) <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+          const iso = fmtDate(d);
+          const dow = d.getUTCDay();
+          if (dow === 0 || dow === 6 || holidays.has(iso)) continue;
+          const st = status.get(iso);
+          if (!st || st === "absent") {
+            if (run) { run.to = iso; run.days += 1; } else { run = { from: iso, to: iso, days: 1 }; }
+          } else if (run) {
+            runs.push(run); run = null;
+          }
+        }
+        if (run) runs.push(run);
+        const flaggedRuns = runs.filter((r) => r.days > 10);
+        absence = flaggedRuns.length
+          ? { flagged: true, text: flaggedRuns.map((r) => `${r.days} consecutive working days with no attendance/timesheet entry (${pretty(r.from)} - ${pretty(r.to)})`).join("; ") }
+          : { flagged: false, text: "No period of more than 10 consecutive working days without attendance/timesheet entries." };
+      }
+
+      // B) salary vs CoS salary
+      const salary = num(e.salary_offered);
+      const cosSalary = num(cos.rows[0]?.cos_assigned_salary);
+      let pay: { flagged: boolean; text: string };
+      if (salary === null || cosSalary === null) {
+        pay = { flagged: false, text: salary === null ? "Employee salary not recorded." : "CoS assigned salary has not been entered yet - add it in the CoS section of the employee profile." };
+      } else if (salary < cosSalary) {
+        pay = { flagged: true, text: `Salary (${salary.toLocaleString("en-GB")}) is below the CoS salary (${cosSalary.toLocaleString("en-GB")}).` };
+      } else {
+        pay = { flagged: false, text: `Salary (${salary.toLocaleString("en-GB")}) is at or above the CoS salary (${cosSalary.toLocaleString("en-GB")}).` };
+      }
+
+      // C) role changes
+      const role = hist.rows.length
+        ? {
+            flagged: true,
+            text: hist.rows
+              .map((r) => `${r.field_label} changed from "${r.old_value || "-"}" to "${r.new_value || "-"}" on ${pretty(new Date(r.changed_at).toISOString())}`)
+              .join("; "),
+          }
+        : { flagged: false, text: "No changes to job title, description, department or SOC recorded." };
+
+      // D) right to work summary (latest check)
+      let rtw: { flagged: boolean; text: string };
+      if (!rtwRows.rows.length) {
+        rtw = { flagged: true, text: "No right to work check recorded." };
+      } else {
+        const l = rtwRows.rows[0];
+        const checked = l.date_of_check ? toDateStr(l.date_of_check) : null;
+        const late = !!(checked && joining && checked > joining);
+        const parts = [
+          `Latest check: ${l.check_method || "method not recorded"}${checked ? ` on ${pretty(checked)}` : ""}${l.checked_by_name ? ` by ${l.checked_by_name}` : ""}`,
+          `Status: ${l.status || "-"}`,
+          l.expiry_date ? `Expires ${pretty(toDateStr(l.expiry_date))}` : null,
+          l.rtw_reference ? `Ref ${l.rtw_reference}` : l.share_code ? `Share code ${l.share_code}` : null,
+          `${rtwRows.rows.length} check(s) on file`,
+          late ? "Check was carried out after the joining date" : null,
+        ].filter(Boolean);
+        rtw = { flagged: late, text: parts.join(" | ") };
+      }
+
+      // E) work location / timing changes
+      const location = locHist.rows.length
+        ? {
+            flagged: true,
+            text: locHist.rows
+              .map((r) => `${r.field_label} changed from "${r.old_value || "-"}" to "${r.new_value || "-"}" on ${pretty(new Date(r.changed_at).toISOString())}`)
+              .join("; "),
+          }
+        : { flagged: false, text: "No changes to work location or work timing recorded." };
+
+      return { absence, pay, role, rtw, location };
+    });
   }
 
   /** Chronological (most recent first) change history for the History
@@ -1483,8 +1875,8 @@ export class EmployeeService {
 
     if (dto.cosLicenceNumber !== undefined) {
       await client.query(
-        `INSERT INTO employee.employee_cos_detail (tenant_id, employee_id, licence_number, sponsor_name, certificate_number, certificate_date, assigned_date, expiry_date, applying_from, cos_type, genuine_vacancy_confirmed, genuine_vacancy_confirmed_date, sponsor_note, file_reference)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        `INSERT INTO employee.employee_cos_detail (tenant_id, employee_id, licence_number, sponsor_name, certificate_number, certificate_date, assigned_date, expiry_date, applying_from, cos_type, genuine_vacancy_confirmed, genuine_vacancy_confirmed_date, sponsor_note, file_reference, cos_assigned_salary, cos_pay_frequency)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          ON CONFLICT (employee_id) DO UPDATE SET
            licence_number = EXCLUDED.licence_number, sponsor_name = EXCLUDED.sponsor_name,
            certificate_number = EXCLUDED.certificate_number, certificate_date = EXCLUDED.certificate_date,
@@ -1492,8 +1884,9 @@ export class EmployeeService {
            applying_from = EXCLUDED.applying_from, cos_type = EXCLUDED.cos_type,
            genuine_vacancy_confirmed = EXCLUDED.genuine_vacancy_confirmed,
            genuine_vacancy_confirmed_date = EXCLUDED.genuine_vacancy_confirmed_date,
-           sponsor_note = EXCLUDED.sponsor_note, file_reference = EXCLUDED.file_reference`,
-        [tenantId, employeeId, dto.cosLicenceNumber || null, dto.cosSponsorName || null, dto.cosCertificateNumber || null, dto.cosCertificateDate || null, dto.cosAssignedDate || null, dto.cosExpiryDate || null, dto.cosApplyingFrom || null, dto.cosType || null, dto.cosGenuineVacancyConfirmed || null, dto.cosGenuineVacancyConfirmedDate || null, dto.cosSponsorNote || null, dto.cosFileName || null]
+           sponsor_note = EXCLUDED.sponsor_note, file_reference = EXCLUDED.file_reference,
+           cos_assigned_salary = EXCLUDED.cos_assigned_salary, cos_pay_frequency = EXCLUDED.cos_pay_frequency`,
+        [tenantId, employeeId, dto.cosLicenceNumber || null, dto.cosSponsorName || null, dto.cosCertificateNumber || null, dto.cosCertificateDate || null, dto.cosAssignedDate || null, dto.cosExpiryDate || null, dto.cosApplyingFrom || null, dto.cosType || null, dto.cosGenuineVacancyConfirmed || null, dto.cosGenuineVacancyConfirmedDate || null, dto.cosSponsorNote || null, dto.cosFileName || null, dto.cosAssignedSalary || null, dto.cosPayFrequency || null]
       );
     }
 

@@ -3,12 +3,16 @@ export type ResignationRequestStatus = "pending" | "approved" | "rejected";
 export interface CreateResignationRequestDto {
   employeeId: string;
   reason?: string;
+  additionalComments?: string;
+  handoverPlan?: string;
 }
 
 export interface ResignationRequestDto {
   id: string;
   employeeId: string;
   reason: string | null;
+  additionalComments: string | null;
+  handoverPlan: string | null;
   /** Snapshotted from Settings > HR > Notice Period at the moment this
    * was submitted - see the migration's own doc-comment on why this
    * isn't recomputed from the live setting later. */

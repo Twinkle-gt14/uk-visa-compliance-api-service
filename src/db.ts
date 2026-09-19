@@ -1,4 +1,21 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
+
+/**
+ * pg's default DATE parser builds a JS Date using the server process's
+ * *local* timezone (new Date(year, month, day) under the hood), not
+ * UTC. Every date-only column read through the app then gets
+ * re-serialized with .toISOString() (always UTC) - e.g. toDateStr()
+ * in employee.service.ts, and getMonth()'s .getUTCDate() in
+ * attendance.service.ts - which silently shifts the date backward by
+ * one day on any machine whose local timezone is ahead of UTC (this
+ * dev machine included). A record saved for 28 Sept could come back
+ * reporting 27 Sept, making a genuinely-saved entry look like it never
+ * saved at all. Registering this parser for OID 1082 (date) makes pg
+ * hand back the raw "YYYY-MM-DD" string untouched instead - no Date
+ * object, no timezone math, no drift, regardless of what timezone the
+ * server process itself runs in.
+ */
+types.setTypeParser(1082, (value: string) => value);
 
 /**
  * Connects to PgBouncer's sidecar on localhost — NOT directly to Cloud SQL.

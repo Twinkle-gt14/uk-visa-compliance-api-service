@@ -18,6 +18,8 @@ function rowToResignationRequest(r: any): ResignationRequestDto {
     id: r.id,
     employeeId: r.employee_id,
     reason: r.reason,
+    additionalComments: r.additional_comments,
+    handoverPlan: r.handover_plan,
     noticeDays: Number(r.notice_days),
     tentativeLastDate: toDateStr(r.tentative_last_date),
     status: r.status,
@@ -94,10 +96,10 @@ export class ResignationService {
       }
 
       const result = await client.query(
-        `INSERT INTO employee.resignation_request (tenant_id, employee_id, reason, notice_days, tentative_last_date)
-         VALUES ($1, $2, $3, $4, CURRENT_DATE + ($4 || ' days')::interval)
+        `INSERT INTO employee.resignation_request (tenant_id, employee_id, reason, additional_comments, handover_plan, notice_days, tentative_last_date)
+         VALUES ($1, $2, $3, $4, $5, $6::int, CURRENT_DATE + ($6::int * INTERVAL '1 day'))
          RETURNING *`,
-        [tenantId, dto.employeeId, dto.reason || null, noticePeriod.noticeDays]
+        [tenantId, dto.employeeId, dto.reason?.trim() || null, dto.additionalComments?.trim() || null, dto.handoverPlan?.trim() || null, noticePeriod.noticeDays]
       );
       return rowToResignationRequest(result.rows[0]);
     });

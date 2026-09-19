@@ -26,6 +26,25 @@ function assertValidDay(day: AttendanceDayRecordDto): void {
 
 @Injectable()
 export class AttendanceService {
+  /** Attendance (and, separately, Leave) can only be marked on or after
+   * the employee's actual joining date - a record dated before someone
+   * even started doesn't mean anything. `date_of_joining` comes back as
+   * a plain "YYYY-MM-DD" string (see db.ts's DATE type parser), so this
+   * is a safe plain string comparison, not a Date object one. */
+  private async assertOnOrAfterJoining(client: PoolClient, employeeId: string, dates: string[]): Promise<void> {
+    const result = await client.query(
+      "SELECT date_of_joining FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+      [employeeId]
+    );
+    if (!result.rowCount) throw new NotFoundException("Employee not found.");
+    const joiningDate: string | null = result.rows[0].date_of_joining;
+    if (!joiningDate) return; // no joining date on file yet - nothing to enforce against
+    const earliest = dates.reduce((min, d) => (d < min ? d : min));
+    if (earliest < joiningDate) {
+      throw new BadRequestException(`Attendance cannot be marked before this employee's joining date (${joiningDate}).`);
+    }
+  }
+
   /** Returns only the days that actually have a recorded entry - a day
    * with no row is NOT "present" by default (the old frontend mock
    * fabricated a full month; this doesn't). Weekly-off/holiday
@@ -67,6 +86,7 @@ export class AttendanceService {
   async upsertDay(tenantId: string, employeeId: string, day: AttendanceDayRecordDto): Promise<{ date: string }> {
     assertValidDay(day);
     return withTenant(tenantId, async (client) => {
+      await this.assertOnOrAfterJoining(client, employeeId, [day.date]);
       await this.upsertOne(client, tenantId, employeeId, day);
       return { date: day.date };
     });
@@ -83,6 +103,7 @@ export class AttendanceService {
     days.forEach(assertValidDay);
 
     return withTenant(tenantId, async (client) => {
+      await this.assertOnOrAfterJoining(client, employeeId, days.map((d) => d.date));
       for (const day of days) {
         await this.upsertOne(client, tenantId, employeeId, day);
       }

@@ -118,6 +118,11 @@ export interface PreEmploymentValidationRuleDto {
   checkpoint: string;
   consequence: string;
   source: string;
+  /** "Skilled Worker" / "Global Business Mobility" - which sponsorship
+   * route this rule applies to (see migration 049's one-time backfill,
+   * tagged from whether "GBM" appears in the rule's own Checkpoint
+   * text). */
+  visaType: string;
 }
 
 export interface EmployeeComplianceSheetDto {
