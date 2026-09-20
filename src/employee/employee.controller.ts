@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { AuthGuard, HrAdminGuard, assertSelfOrHrAdmin } from "../auth/auth.guard";
+import { AuthGuard, HrAdminGuard, assertSelfOrHrAdmin, isHrLevel } from "../auth/auth.guard";
 import { EmployeeService } from "./employee.service";
 import type { EmployeeUpsertDto, UpdateStatusDto } from "./employee.dto";
 
@@ -38,6 +38,18 @@ export class EmployeeController {
   // 500 - this is what broke the Workflow page. Keeping these above
   // the dynamic :id routes is what makes the Workflow page's own
   // endpoint reachable at all.
+  @Get("expiries")
+  @UseGuards(HrAdminGuard)
+  listExpiries(@Req() req: Request) {
+    return this.employeeService.listExpiries(req.user!.tenantId);
+  }
+
+  @Get("former")
+  @UseGuards(HrAdminGuard)
+  listFormer(@Req() req: Request, @Query("q") q?: string, @Query("from") from?: string, @Query("to") to?: string) {
+    return this.employeeService.listFormer(req.user!.tenantId, q, from, to);
+  }
+
   @Get("ukvi-actions")
   @UseGuards(HrAdminGuard)
   listUkviActions(@Req() req: Request) {
@@ -131,7 +143,7 @@ export class EmployeeController {
   update(@Req() req: Request, @Param("id") id: string, @Body() body: Partial<EmployeeUpsertDto> & { changedBy?: string }) {
     assertSelfOrHrAdmin(req.user!, id);
     const { changedBy, ...dto } = body;
-    if (req.user!.role === "hr_admin") {
+    if (isHrLevel(req.user!.role)) {
       return this.employeeService.update(req.user!.tenantId, id, dto, changedBy);
     }
     return this.employeeService.submitChangeRequest(req.user!.tenantId, id, dto, changedBy);

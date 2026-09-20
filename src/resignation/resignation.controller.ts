@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { AuthGuard, assertSelfOrHrAdmin } from "../auth/auth.guard";
+import { AuthGuard, assertSelfOrHrAdmin, isHrLevel } from "../auth/auth.guard";
 import { ResignationService } from "./resignation.service";
 import type { CreateResignationRequestDto, DecideResignationRequestDto } from "./resignation.dto";
 
@@ -23,8 +23,8 @@ export class ResignationController {
     // Same scoping rule as GET /leave/requests: an employee session
     // always gets forced to their own id, regardless of what's asked
     // for, rather than trusting the query param.
-    const scopedEmployeeId = req.user!.role === "hr_admin" ? employeeId : req.user!.employeeId!;
-    if (req.user!.role !== "hr_admin" && employeeId && employeeId !== req.user!.employeeId) {
+    const scopedEmployeeId = isHrLevel(req.user!.role) ? employeeId : req.user!.employeeId!;
+    if (!isHrLevel(req.user!.role) && employeeId && employeeId !== req.user!.employeeId) {
       throw new ForbiddenException("You can only view your own resignation requests.");
     }
     return this.resignationService.listResignationRequests(req.user!.tenantId, scopedEmployeeId, status);
@@ -41,7 +41,7 @@ export class ResignationController {
    * reject a resignation, including their own. */
   @Post("requests/:id/decision")
   decideRequest(@Req() req: Request, @Param("id") id: string, @Body() body: DecideResignationRequestDto) {
-    if (req.user!.role !== "hr_admin") {
+    if (!isHrLevel(req.user!.role)) {
       throw new ForbiddenException("Only HR can approve or reject resignation requests.");
     }
     return this.resignationService.decideResignationRequest(req.user!.tenantId, id, body);

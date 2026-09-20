@@ -1,6 +1,6 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import type { PoolClient } from "pg";
-import { withTenant } from "../db";
+import { authPool, withTenant } from "../db";
 import { AuthService } from "../auth/auth.service";
 import type {
   EmployeeUpsertDto,
@@ -115,8 +115,51 @@ function assertRequiredFields(dto: EmployeeUpsertDto): void {
 }
 
 @Injectable()
-export class EmployeeService {
+export class EmployeeService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly authService: AuthService) {}
+
+  private lapseTimer?: NodeJS.Timeout;
+  private lastLapseSweep = new Map<string, number>();
+
+  /** Cloud Run can scale to zero, so the sweep also runs whenever the employee list is loaded (see list()); this
+   * hourly timer just covers a long-running instance with nobody browsing. */
+  onModuleInit() {
+    const run = async () => {
+      try {
+        const tenants = await authPool.query("SELECT DISTINCT tenant_id FROM security.credential");
+        for (const t of tenants.rows) await this.deactivateLapsedEmployees(t.tenant_id, true);
+      } catch (err) {
+        console.error("Lapsed-employee sweep failed:", err instanceof Error ? err.message : err);
+      }
+    };
+    void run();
+    this.lapseTimer = setInterval(run, 60 * 60 * 1000);
+    this.lapseTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.lapseTimer) clearInterval(this.lapseTimer);
+  }
+
+  /** An Active employee becomes Inactive once their contract end date, or the last working day of an approved
+   * resignation, is in the past. Returns how many were changed. Throttled to once per 10 minutes per tenant
+   * unless forced. */
+  async deactivateLapsedEmployees(tenantId: string, force = false): Promise<number> {
+    const last = this.lastLapseSweep.get(tenantId) ?? 0;
+    if (!force && Date.now() - last < 10 * 60 * 1000) return 0;
+    this.lastLapseSweep.set(tenantId, Date.now());
+    return withTenant(tenantId, async (client) => {
+      const r = await client.query(
+        `UPDATE employee.employee_master m SET record_status = 'Inactive', updated_at = now()
+         WHERE m.tenant_id = $1 AND NOT m.is_deleted AND m.is_onboarded AND m.record_status = 'Active'
+           AND (m.contract_end_date < CURRENT_DATE
+                OR EXISTS (SELECT 1 FROM employee.resignation_request rr
+                           WHERE rr.employee_id = m.id AND rr.status = 'approved' AND rr.tentative_last_date < CURRENT_DATE))`,
+        [tenantId]
+      );
+      return r.rowCount ?? 0;
+    });
+  }
 
   /** Looks up reference.department by name (trimmed, case-insensitive),
    * creating it if it doesn't exist yet. This remains a pragmatic
@@ -140,12 +183,106 @@ export class EmployeeService {
     return created.rows[0].id;
   }
 
+  /** Every visa / right-to-work / passport / CoS expiry on Active, onboarded employees (Visa and CoS only for
+   * sponsored ones, like the dashboard), plus the tenant's sponsor licence details. Days are counted from today. */
+  async listExpiries(tenantId: string) {
+    return withTenant(tenantId, async (client) => {
+      const base = `m.record_status = 'Active' AND m.is_onboarded AND NOT m.is_deleted`;
+      const cols = `m.id AS employee_uuid, m.employee_id_label, m.first_name, m.middle_name, m.last_name, m.job_title, m.current_location,
+                     m.date_of_joining, m.soc_number, d.name AS department,
+                     (SELECT value FROM employee.employee_contact_detail c WHERE c.employee_id = m.id AND c.contact_type = 'email' AND c.is_primary AND NOT c.is_removed LIMIT 1) AS work_email`;
+      const from = `FROM employee.employee_master m LEFT JOIN reference.department d ON d.id = m.department_id`;
+      const sql = `
+        SELECT 'Visa' AS type, COALESCE(NULLIF(v.visa_type, ''), 'Visa') AS document_check, v.expiry_date, v.visa_number AS document_number, v.issue_date,
+               (SELECT licence_number FROM employee.employee_cos_detail x WHERE x.employee_id = m.id) AS licence_number,
+               (SELECT certificate_number FROM employee.employee_cos_detail x WHERE x.employee_id = m.id) AS certificate_number, ${cols}
+          ${from} JOIN employee.employee_visa_detail v ON v.employee_id = m.id
+          WHERE ${base} AND m.sponsored_employee AND v.expiry_date IS NOT NULL
+        UNION ALL
+        SELECT 'Right to Work', 'Right to Work Check', r.expiry_date, r.rtw_reference, r.date_of_check, NULL, NULL, ${cols}
+          ${from} JOIN LATERAL (SELECT * FROM employee.employee_rtw_check x WHERE x.employee_id = m.id AND x.expiry_date IS NOT NULL ORDER BY x.date_of_check DESC NULLS LAST LIMIT 1) r ON true
+          WHERE ${base}
+        UNION ALL
+        SELECT 'Passport', 'Passport', p.expiry_date, p.passport_number, p.issue_date, NULL, NULL, ${cols}
+          ${from} JOIN employee.employee_passport_detail p ON p.employee_id = m.id
+          WHERE ${base} AND p.expiry_date IS NOT NULL
+        UNION ALL
+        SELECT 'CoS', 'Certificate of Sponsorship', c.expiry_date, c.certificate_number, c.certificate_date, c.licence_number, c.certificate_number, ${cols}
+          ${from} JOIN employee.employee_cos_detail c ON c.employee_id = m.id
+          WHERE ${base} AND m.sponsored_employee AND c.expiry_date IS NOT NULL`;
+      const r = await client.query(`SELECT t.*, (t.expiry_date - CURRENT_DATE) AS days FROM (${sql}) t ORDER BY t.expiry_date, t.first_name`);
+      const records = r.rows.map((x) => {
+        const name = [x.first_name, x.middle_name, x.last_name].filter(Boolean).join(" ");
+        return {
+          employeeUuid: x.employee_uuid as string,
+          employeeId: (x.employee_id_label ?? "") as string,
+          name,
+          initials: [x.first_name, x.last_name].filter(Boolean).map((n: string) => n[0]).join("").toUpperCase() || "?",
+          role: (x.job_title ?? "") as string,
+          type: x.type as string,
+          documentCheck: x.document_check as string,
+          expiryDate: toDateStr(x.expiry_date),
+          daysToExpiry: Number(x.days),
+          department: (x.department ?? "") as string,
+          location: (x.current_location ?? "") as string,
+          workEmail: (x.work_email ?? "") as string,
+          startDate: toDateStr(x.date_of_joining),
+          documentNumber: (x.document_number ?? undefined) as string | undefined,
+          issueDate: toDateStr(x.issue_date) || undefined,
+          sponsorLicenceNumber: (x.licence_number ?? undefined) as string | undefined,
+          certificateOfSponsorship: (x.certificate_number ?? undefined) as string | undefined,
+          occupationCode: (x.soc_number ?? undefined) as string | undefined,
+        };
+      });
+      const p = await client.query("SELECT sponsor_licence_number, sponsor_name FROM reference.employer_profile WHERE tenant_id = $1", [tenantId]);
+      return { records, licence: { licenceNumber: p.rows[0]?.sponsor_licence_number ?? null, sponsorName: p.rows[0]?.sponsor_name ?? null } };
+    });
+  }
+
+  /** Employees no longer part of the organisation (status Inactive). "Left on" is the last working day of an
+   * approved resignation, else the contract end date, else the day the record was made Inactive. from/to filter
+   * on that date (inclusive). */
+  async listFormer(tenantId: string, q?: string, from?: string, to?: string) {
+    await this.deactivateLapsedEmployees(tenantId).catch(() => 0);
+    const isDate = (v?: string) => !!v && /^d{4}-d{2}-d{2}$/.test(v);
+    return withTenant(tenantId, async (client) => {
+      const r = await client.query(
+        `SELECT * FROM (
+           SELECT m.id, m.employee_id_label, m.first_name, m.middle_name, m.last_name, m.job_title, d.name AS department,
+                  m.date_of_joining, m.contract_end_date,
+                  rr.lwd AS resignation_date,
+                  COALESCE(rr.lwd, m.contract_end_date, m.updated_at::date) AS left_on,
+                  CASE WHEN rr.lwd IS NOT NULL THEN 'Resigned' WHEN m.contract_end_date IS NOT NULL THEN 'Contract ended' ELSE 'Deactivated' END AS reason
+           FROM employee.employee_master m
+           LEFT JOIN reference.department d ON d.id = m.department_id
+           LEFT JOIN LATERAL (SELECT max(tentative_last_date) AS lwd FROM employee.resignation_request x WHERE x.employee_id = m.id AND x.status = 'approved') rr ON true
+           WHERE NOT m.is_deleted AND m.is_onboarded AND m.record_status = 'Inactive'
+         ) t
+         WHERE ($1::text IS NULL OR lower(concat_ws(' ', first_name, middle_name, last_name, employee_id_label, job_title, department)) LIKE '%' || lower($1) || '%')
+           AND ($2::date IS NULL OR left_on >= $2::date) AND ($3::date IS NULL OR left_on <= $3::date)
+         ORDER BY left_on DESC, first_name`,
+        [q?.trim() || null, isDate(from) ? from : null, isDate(to) ? to : null]
+      );
+      return r.rows.map((x) => ({
+        recordId: x.id,
+        employeeId: x.employee_id_label ?? "",
+        fullName: [x.first_name, x.middle_name, x.last_name].filter(Boolean).join(" "),
+        jobTitle: x.job_title ?? "",
+        department: x.department ?? "",
+        joinedOn: toDateStr(x.date_of_joining),
+        leftOn: toDateStr(x.left_on),
+        reason: x.reason as string,
+      }));
+    });
+  }
+
   async list(
     tenantId: string,
     page: number,
     pageSize: number,
     onboarded?: boolean
   ): Promise<{ items: EmployeeSummary[]; total: number; page: number; pageSize: number }> {
+    await this.deactivateLapsedEmployees(tenantId).catch(() => 0);
     return withTenant(tenantId, async (client) => {
       const offset = (page - 1) * pageSize;
       // `onboarded` filters which side of the pipeline a caller wants:
@@ -225,6 +362,7 @@ export class EmployeeService {
           recordStatus: r.record_status,
           isOnboarded: r.is_onboarded,
           sponsoredEmployee: !!r.sponsored_employee,
+          isUkCitizen: r.is_uk_citizen !== false,
           contractDuration: r.contract_duration ?? null,
           primaryEmail: r.primary_email ?? null,
           primaryPhone: r.primary_phone ?? null,
@@ -838,6 +976,8 @@ export class EmployeeService {
       if (newVal === undefined) continue;
       const oldVal = oldData[field.key];
       if (String(oldVal ?? "") === String(newVal ?? "")) continue;
+      // Numbers come back from the DB as "40.00" but the form sends "40" - the same value, not a change.
+      if (field.key === "standardHoursPerWeek" && oldVal != null && oldVal !== "" && newVal != null && newVal !== "" && Number(oldVal) === Number(newVal)) continue;
       const oldStr = oldVal != null && oldVal !== "" ? String(oldVal) : null;
       const newStr = newVal != null && newVal !== "" ? String(newVal) : null;
       await client.query(
@@ -1370,8 +1510,8 @@ export class EmployeeService {
         client.query("SELECT employee_id, record_date, status FROM attendance.attendance_record"),
         client.query("SELECT holiday_date FROM reference.holiday"),
         client.query(
-          `SELECT employee_id, field_label, changed_at FROM employee.employee_change_history
-           WHERE field_label = ANY($1) AND changed_at >= now() - ($2 || ' days')::interval`,
+          `SELECT employee_id, field_label, old_value, new_value, changed_at FROM employee.employee_change_history
+           WHERE field_label = ANY($1) AND changed_at >= now() - ($2 || ' days')::interval ORDER BY changed_at`,
           [["Job Title", "Job Description", "Department", "SOC Number", "Work Location", "Work Timing", "Project / Work / Branch", "Weekly Working Hours", "Salary Offered", "CoS Assigned Salary"], String(CHANGE_LOOKBACK_DAYS)]
         ),
       ]);
@@ -1395,15 +1535,17 @@ export class EmployeeService {
         if (!attByEmp.has(r.employee_id)) attByEmp.set(r.employee_id, new Map());
         attByEmp.get(r.employee_id)!.set(toDateStr(r.record_date), r.status);
       }
-      const histByEmp = new Map<string, { label: string; at: string }[]>();
+      const histByEmp = new Map<string, { label: string; at: string; oldValue: string | null; newValue: string | null }[]>();
       for (const r of hist.rows) {
         if (!histByEmp.has(r.employee_id)) histByEmp.set(r.employee_id, []);
-        histByEmp.get(r.employee_id)!.push({ label: r.field_label, at: new Date(r.changed_at).toISOString().slice(0, 10) });
+        histByEmp.get(r.employee_id)!.push({ label: r.field_label, at: new Date(r.changed_at).toISOString().slice(0, 10), oldValue: r.old_value ?? null, newValue: r.new_value ?? null });
       }
 
       const records: {
         id: string; recordId: string; isOnboarded: boolean; employeeName: string; department: string; jobTitle: string;
         scenario: string; eventDate: string; reportingDeadline: string; status: "Overdue" | "Due Soon"; daysLeft: number;
+        changes?: { field: string; previous: string | null; current: string | null }[];
+        extras?: { label: string; value: string }[];
       }[] = [];
 
       for (const e of emps.rows) {
@@ -1414,10 +1556,10 @@ export class EmployeeService {
           department: (e.department_name ?? "") as string,
           jobTitle: (e.job_title ?? "") as string,
         };
-        const push = (scenario: string, eventDate: string, key: string) => {
+        const push = (scenario: string, eventDate: string, key: string, extra?: { changes?: { field: string; previous: string | null; current: string | null }[]; extras?: { label: string; value: string }[] }) => {
           const reportingDeadline = addWorkingDays(eventDate, 10);
           const daysLeft = Math.round((new Date(reportingDeadline + "T00:00:00Z").getTime() - todayMs) / 86400000);
-          records.push({ ...base, id: `${e.id}:${key}`, scenario, eventDate, reportingDeadline, status: daysLeft < 0 ? "Overdue" : "Due Soon", daysLeft });
+          records.push({ ...base, id: `${e.id}:${key}`, scenario, eventDate, reportingDeadline, status: daysLeft < 0 ? "Overdue" : "Due Soon", daysLeft, ...extra });
         };
 
         // 1. consecutive unauthorised working days
@@ -1452,18 +1594,45 @@ export class EmployeeService {
         const cosSalary = num(e.cos_assigned_salary);
         const changes = histByEmp.get(e.id) ?? [];
         if (salary !== null && cosSalary !== null && salary < cosSalary) {
-          const payChanges = changes.filter((c) => c.label === "Salary Offered" || c.label === "CoS Assigned Salary").map((c) => c.at).sort();
-          push(SCENARIOS.pay, payChanges.length ? payChanges[payChanges.length - 1] : today, "pay");
+          const salaryChanges = changes.filter((c) => c.label === "Salary Offered");
+          const lastSalary = salaryChanges[salaryChanges.length - 1];
+          const payDates = changes.filter((c) => c.label === "Salary Offered" || c.label === "CoS Assigned Salary").map((c) => c.at).sort();
+          push(SCENARIOS.pay, payDates.length ? payDates[payDates.length - 1] : today, "pay", {
+            changes: [{ field: "Salary", previous: lastSalary?.oldValue ?? null, current: String(e.salary_offered ?? "") || null }],
+            extras: [{ label: "CoS Salary", value: String(e.cos_assigned_salary ?? "").trim() || "-" }],
+          });
         }
 
-        // 4/5. role and location changes (one event per change date)
-        const seen = new Set<string>();
+        // 4/5. role and location changes (one event per change date, listing every field changed that day)
+        const byKey = new Map<string, { kind: "role" | "location"; at: string; items: { field: string; previous: string | null; current: string | null }[] }>();
         for (const c of changes) {
           const kind = ["Job Title", "Job Description", "Department", "SOC Number"].includes(c.label) ? "role"
             : ["Work Location", "Work Timing", "Project / Work / Branch", "Weekly Working Hours"].includes(c.label) ? "location" : null;
-          if (!kind || seen.has(kind + c.at)) continue;
-          seen.add(kind + c.at);
-          push(kind === "role" ? SCENARIOS.role : SCENARIOS.location, c.at, `${kind}:${c.at}`);
+          if (!kind) continue;
+          const key = kind + c.at;
+          if (!byKey.has(key)) byKey.set(key, { kind, at: c.at, items: [] });
+          byKey.get(key)!.items.push({ field: c.label, previous: c.oldValue, current: c.newValue });
+        }
+        // Collapse each field to its first-previous and last-current value, and drop changes that
+        // are only formatting (e.g. "40.00" -> "40") or that were reverted the same day.
+        const same = (x: string | null, y: string | null) => {
+          const nx = (x ?? "").trim();
+          const ny = (y ?? "").trim();
+          if (nx === ny) return true;
+          const fx = Number(nx.replace(/,/g, ""));
+          const fy = Number(ny.replace(/,/g, ""));
+          return nx !== "" && ny !== "" && Number.isFinite(fx) && Number.isFinite(fy) && fx === fy;
+        };
+        for (const v of byKey.values()) {
+          const perField = new Map<string, { field: string; previous: string | null; current: string | null }>();
+          for (const it of v.items) {
+            const existing = perField.get(it.field);
+            if (existing) existing.current = it.current;
+            else perField.set(it.field, { ...it });
+          }
+          const real = [...perField.values()].filter((it) => !same(it.previous, it.current));
+          if (real.length === 0) continue;
+          push(v.kind === "role" ? SCENARIOS.role : SCENARIOS.location, v.at, `${v.kind}:${v.at}`, { changes: real });
         }
       }
 

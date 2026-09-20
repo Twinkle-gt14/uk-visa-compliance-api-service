@@ -7,10 +7,12 @@ import { PayslipModule } from "./payslip/payslip.module";
 import { SettingsModule } from "./settings/settings.module";
 import { ComplianceModule } from "./compliance/compliance.module";
 import { ResignationModule } from "./resignation/resignation.module";
+import { DashboardModule } from "./dashboard/dashboard.module";
+import { AccessModule } from "./access/access.module";
 import { HealthController } from "./health.controller";
 
 @Module({
-  imports: [AuthModule, EmployeeModule, AttendanceModule, LeaveModule, PayslipModule, SettingsModule, ComplianceModule, ResignationModule],
+  imports: [AuthModule, EmployeeModule, AttendanceModule, LeaveModule, PayslipModule, SettingsModule, ComplianceModule, ResignationModule, DashboardModule, AccessModule],
   controllers: [HealthController],
 })
 export class AppModule {}

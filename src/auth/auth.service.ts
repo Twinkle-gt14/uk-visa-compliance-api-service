@@ -1,12 +1,15 @@
 import { Injectable } from "@nestjs/common";
 import * as jwt from "jsonwebtoken";
 import { authPool, withTenant } from "../db";
+import { DEFAULT_ROLE_PERMISSIONS, combineRoles, tokenRoleFor, type AccessLevel, type TokenRole } from "../access/permissions";
 
 export interface LoginResult {
   ok: boolean;
   token?: string;
   mustChangePassword?: boolean;
-  role?: "hr_admin" | "employee";
+  role?: TokenRole;
+  roleName?: string;
+  permissions?: string[];
   employeeId?: string | null;
   error?: string;
 }
@@ -14,7 +17,7 @@ export interface LoginResult {
 export interface JwtPayload {
   userId: string;
   tenantId: string;
-  role: "hr_admin" | "employee";
+  role: TokenRole;
   employeeId: string | null;
   /** Added so services outside AuthService's own connection (e.g.
    * ComplianceService recording who uploaded a document) can show a
@@ -39,6 +42,37 @@ export interface JwtPayload {
  * many times it's allowed to. */
 const ABSOLUTE_SESSION_LIFETIME_SECONDS = 12 * 60 * 60; // 12 hours
 
+/** How long after a token's own 15-minute expiry it can still be renewed. The browser keeps the
+ * session cookie much longer than the token so a late renewal (sleeping laptop, background tab) can
+ * still happen - but past this window the person has simply been away too long and has to sign in
+ * again. Total idle allowance is therefore about 15 + 15 = 30 minutes since the last renewal. */
+const IDLE_RENEWAL_GRACE_SECONDS = 15 * 60;
+
+/** Turns a credential row (its primary role, joined, plus any further roles) into the login-token role plus the
+ * role names and permissions the front-end uses for menus. A user can hold several roles: the access level is
+ * the highest of them and the permissions are all of them combined. A credential with no role_id yet (created
+ * by older code) falls back to the built-in defaults for its legacy role. */
+function resolveAccess(row: {
+  role: string;
+  access_level: string | null;
+  role_name: string | null;
+  permissions: string[] | null;
+  extra_roles?: { name: string; access_level: AccessLevel; permissions: string[] | null }[] | null;
+}): { role: TokenRole; roleName: string; permissions: string[] } {
+  const roles: { access_level: AccessLevel; permissions: string[] | null; name: string }[] = [];
+  if (row.access_level) {
+    roles.push({ access_level: row.access_level as AccessLevel, permissions: row.permissions, name: row.role_name ?? row.access_level });
+  } else {
+    const level: AccessLevel = row.role === "employee" ? "employee" : "hr";
+    roles.push({ access_level: level, permissions: null, name: level === "employee" ? "Employee" : "HR" });
+  }
+  for (const r of row.extra_roles ?? []) roles.push({ access_level: r.access_level, permissions: r.permissions, name: r.name });
+  const combined = combineRoles(roles);
+  return { role: tokenRoleFor(combined.level), roleName: combined.names.join(" + "), permissions: combined.permissions };
+}
+
+const ACCOUNT_DEACTIVATED = "This account has been deactivated. Contact your administrator.";
+
 @Injectable()
 export class AuthService {
   private readonly jwtSecret = process.env.JWT_SECRET || "dev-only-change-me";
@@ -56,10 +90,15 @@ export class AuthService {
    */
   async login(email: string, password: string): Promise<LoginResult> {
     const result = await authPool.query(
-      `SELECT id, tenant_id, password_hash, role, employee_id, must_change_password, email
-       FROM security.credential
-       WHERE email = $1
-       AND password_hash = crypt($2, password_hash)`,
+      `SELECT c.id, c.tenant_id, c.password_hash, c.role, c.employee_id, c.must_change_password, c.email, c.is_active,
+              r.name AS role_name, r.access_level, r.permissions,
+              COALESCE((SELECT json_agg(json_build_object('name', x.name, 'access_level', x.access_level, 'permissions', x.permissions))
+                         FROM security.credential_role cr JOIN security.role x ON x.id = cr.role_id
+                         WHERE cr.credential_id = c.id), '[]'::json) AS extra_roles
+       FROM security.credential c
+       LEFT JOIN security.role r ON r.id = c.role_id
+       WHERE c.email = $1
+       AND c.password_hash = crypt($2, c.password_hash)`,
       [email.trim().toLowerCase(), password]
     );
 
@@ -70,6 +109,10 @@ export class AuthService {
     }
 
     const row = result.rows[0];
+    if (row.is_active === false) {
+      return { ok: false, error: ACCOUNT_DEACTIVATED };
+    }
+    const access = resolveAccess(row);
 
     // Employee login only - an hr_admin session has no linked
     // employee_id at all, and is unaffected. Only an Active employee
@@ -89,14 +132,22 @@ export class AuthService {
     const payload: JwtPayload = {
       userId: row.id,
       tenantId: row.tenant_id,
-      role: row.role,
+      role: access.role,
       employeeId: row.employee_id,
       email: row.email,
       origIat: Math.floor(Date.now() / 1000),
     };
     const token = jwt.sign(payload, this.jwtSecret, { expiresIn: "15m" });
 
-    return { ok: true, token, mustChangePassword: !!row.must_change_password, role: row.role, employeeId: row.employee_id };
+    return {
+      ok: true,
+      token,
+      mustChangePassword: !!row.must_change_password,
+      role: access.role,
+      roleName: access.roleName,
+      permissions: access.permissions,
+      employeeId: row.employee_id,
+    };
   }
 
   /**
@@ -128,11 +179,16 @@ export class AuthService {
    * it from happening on every legitimate refresh in the first place.
    */
   async refresh(token: string): Promise<LoginResult> {
-    let payload: JwtPayload & { iat: number };
+    let payload: JwtPayload & { iat: number; exp?: number };
     try {
-      payload = jwt.verify(token, this.jwtSecret, { ignoreExpiration: true }) as JwtPayload & { iat: number };
+      payload = jwt.verify(token, this.jwtSecret, { ignoreExpiration: true }) as JwtPayload & { iat: number; exp?: number };
     } catch {
       return { ok: false, error: "Session expired or invalid." };
+    }
+
+    // Away too long: the token expired more than the grace window ago.
+    if (typeof payload.exp === "number" && Math.floor(Date.now() / 1000) - payload.exp > IDLE_RENEWAL_GRACE_SECONDS) {
+      return { ok: false, error: "Session expired due to inactivity. Please sign in again." };
     }
 
     // Tokens issued before origIat existed have no way to know their
@@ -150,13 +206,23 @@ export class AuthService {
     // forcing a real re-login rather than silently keeping a deleted
     // account's session alive.
     const result = await authPool.query(
-      `SELECT tenant_id, role, employee_id, email FROM security.credential WHERE id = $1`,
+      `SELECT c.tenant_id, c.role, c.employee_id, c.email, c.is_active, r.name AS role_name, r.access_level, r.permissions,
+              COALESCE((SELECT json_agg(json_build_object('name', x.name, 'access_level', x.access_level, 'permissions', x.permissions))
+                         FROM security.credential_role cr JOIN security.role x ON x.id = cr.role_id
+                         WHERE cr.credential_id = c.id), '[]'::json) AS extra_roles
+       FROM security.credential c
+       LEFT JOIN security.role r ON r.id = c.role_id
+       WHERE c.id = $1`,
       [payload.userId]
     );
     if (result.rowCount === 0) {
       return { ok: false, error: "Session expired. Please sign in again." };
     }
     const row = result.rows[0];
+    if (row.is_active === false) {
+      return { ok: false, error: "Session expired. " + ACCOUNT_DEACTIVATED };
+    }
+    const access = resolveAccess(row);
 
     // Same Active-only check as login() - a session refresh is exactly
     // the "already-live session" case that check's own comment is
@@ -170,14 +236,14 @@ export class AuthService {
     const newPayload: JwtPayload = {
       userId: payload.userId,
       tenantId: row.tenant_id,
-      role: row.role,
+      role: access.role,
       employeeId: row.employee_id,
       email: row.email,
       origIat: sessionStart,
     };
     const newToken = jwt.sign(newPayload, this.jwtSecret, { expiresIn: "15m" });
 
-    return { ok: true, token: newToken, role: row.role, employeeId: row.employee_id };
+    return { ok: true, token: newToken, role: access.role, roleName: access.roleName, permissions: access.permissions, employeeId: row.employee_id };
   }
 
   /** Active-only gate for an employee-role login/refresh - see login()
@@ -212,8 +278,9 @@ export class AuthService {
     const existing = await authPool.query("SELECT id FROM security.credential WHERE email = $1", [email.trim().toLowerCase()]);
     if (existing.rowCount) return;
     await authPool.query(
-      `INSERT INTO security.credential (tenant_id, email, password_hash, role, employee_id, must_change_password)
-       VALUES ($1, $2, crypt($3, gen_salt('bf')), 'employee', $4, true)`,
+      `INSERT INTO security.credential (tenant_id, email, password_hash, role, employee_id, must_change_password, role_id)
+       VALUES ($1, $2, crypt($3, gen_salt('bf')), 'employee', $4, true,
+               (SELECT id FROM security.role WHERE tenant_id = $1 AND name = 'Employee'))`,
       [tenantId, email.trim().toLowerCase(), employeeIdLabel, employeeId]
     );
   }

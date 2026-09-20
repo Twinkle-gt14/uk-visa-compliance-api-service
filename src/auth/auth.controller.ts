@@ -38,6 +38,8 @@ export class AuthController {
       token: result.token,
       mustChangePassword: result.mustChangePassword,
       role: result.role,
+      roleName: result.roleName,
+      permissions: result.permissions,
       employeeId: result.employeeId,
     };
   }
@@ -69,7 +71,7 @@ export class AuthController {
       maxAge: 15 * 60 * 1000,
     });
 
-    return { ok: true, token: result.token, role: result.role, employeeId: result.employeeId };
+    return { ok: true, token: result.token, role: result.role, roleName: result.roleName, permissions: result.permissions, employeeId: result.employeeId };
   }
 
   /** The logged-in user changing their own password - also how the

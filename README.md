@@ -49,7 +49,7 @@ gcloud run revisions list --service=api-service --region=asia-south1
 ## Verifying the fix specifically
 
 ```powershell
-Invoke-WebRequest -Uri "https://api-service-57843829799.asia-south1.run.app/auth/login" -Method POST -ContentType "application/json" -Body '{"email":"hr.admin@ukvisacompliance.com","password":"Password123!"}' -UseBasicParsing | Select-Object -ExpandProperty Content
+Invoke-WebRequest -Uri "https://api-service-57843829799.asia-south1.run.app/auth/login" -Method POST -ContentType "application/json" -Body '{"email":"admin.abc@ukvisacompliance.com","password":"Password123!"}' -UseBasicParsing | Select-Object -ExpandProperty Content
 ```
 
 Expected: `{"ok":true,"token":"eyJhbGc..."}` — a `token` field with a long

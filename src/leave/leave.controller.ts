@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { AuthGuard, assertSelfOrHrAdmin } from "../auth/auth.guard";
+import { AuthGuard, assertSelfOrHrAdmin, isHrLevel } from "../auth/auth.guard";
 import { LeaveService } from "./leave.service";
 import type { CreateLeaveRequestDto, DecideLeaveRequestDto, UpdateLeaveTypeDto } from "./leave.dto";
 
@@ -25,8 +25,8 @@ export class LeaveController {
     // every request tenant-wide (listLeaveRequests treats a missing
     // filter as "all") - force it to their own id rather than trusting
     // the query param either way.
-    const scopedEmployeeId = req.user!.role === "hr_admin" ? employeeId : req.user!.employeeId!;
-    if (req.user!.role !== "hr_admin" && employeeId && employeeId !== req.user!.employeeId) {
+    const scopedEmployeeId = isHrLevel(req.user!.role) ? employeeId : req.user!.employeeId!;
+    if (!isHrLevel(req.user!.role) && employeeId && employeeId !== req.user!.employeeId) {
       throw new ForbiddenException("You can only view your own leave requests.");
     }
     return this.leaveService.listLeaveRequests(req.user!.tenantId, scopedEmployeeId, status);
@@ -50,7 +50,7 @@ export class LeaveController {
    * anyone else's, so this doesn't use assertSelfOrHrAdmin at all. */
   @Post("requests/:id/decision")
   decideRequest(@Req() req: Request, @Param("id") id: string, @Body() body: DecideLeaveRequestDto) {
-    if (req.user!.role !== "hr_admin") {
+    if (!isHrLevel(req.user!.role)) {
       throw new ForbiddenException("Only HR can approve or reject leave requests.");
     }
     return this.leaveService.decideLeaveRequest(req.user!.tenantId, id, body);
@@ -58,7 +58,7 @@ export class LeaveController {
 
   @Post("requests/:id/cancel")
   cancelRequest(@Req() req: Request, @Param("id") id: string) {
-    const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;
+    const requesterEmployeeId = isHrLevel(req.user!.role) ? undefined : req.user!.employeeId!;
     return this.leaveService.cancelLeaveRequest(req.user!.tenantId, id, requesterEmployeeId);
   }
 }

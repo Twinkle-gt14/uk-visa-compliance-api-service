@@ -5,7 +5,7 @@ import * as jwt from "jsonwebtoken";
 export interface AuthenticatedUser {
   userId: string;
   tenantId: string;
-  role: "hr_admin" | "employee";
+  role: "admin" | "hr_admin" | "employee";
   employeeId: string | null;
   /** See JwtPayload's own comment (auth.service.ts) on why this rides
    * along in the token itself rather than being looked up here. Falls
@@ -58,7 +58,7 @@ export class AuthGuard implements CanActivate {
       const payload = jwt.verify(token, this.jwtSecret) as {
         userId: string;
         tenantId: string;
-        role?: "hr_admin" | "employee";
+        role?: "admin" | "hr_admin" | "employee";
         employeeId?: string | null;
         email?: string;
       };
@@ -93,6 +93,12 @@ export class AuthGuard implements CanActivate {
   }
 }
 
+/** HR-level access: both HR and Admin sessions. Everything the API used to gate on role === "hr_admin"
+ * is gated on this instead, so an Admin can do everything HR can. */
+export function isHrLevel(role: AuthenticatedUser["role"] | undefined): boolean {
+  return role === "hr_admin" || role === "admin";
+}
+
 /** Throws if an employee-role session is trying to touch a record that
  * isn't their own. hr_admin sessions are never restricted by this -
  * call it at the top of any attendance/leave handler that takes a
@@ -102,7 +108,7 @@ export class AuthGuard implements CanActivate {
  * generic "401 -> log out" interceptor into signing out someone who
  * did nothing wrong). */
 export function assertSelfOrHrAdmin(user: AuthenticatedUser, targetEmployeeId: string) {
-  if (user.role === "hr_admin") return;
+  if (isHrLevel(user.role)) return;
   if (user.employeeId !== targetEmployeeId) {
     throw new ForbiddenException("You can only access your own records.");
   }
@@ -119,8 +125,20 @@ export function assertSelfOrHrAdmin(user: AuthenticatedUser, targetEmployeeId: s
 export class HrAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    if (req.user?.role !== "hr_admin") {
+    if (!isHrLevel(req.user?.role)) {
       throw new ForbiddenException("This area is only available to HR/admin users.");
+    }
+    return true;
+  }
+}
+
+/** Managing users and roles is for Admins only - not even HR. Apply after AuthGuard, same as HrAdminGuard. */
+@Injectable()
+export class AdminGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const req = context.switchToHttp().getRequest<Request>();
+    if (req.user?.role !== "admin") {
+      throw new ForbiddenException("Only an Admin can manage users and roles.");
     }
     return true;
   }

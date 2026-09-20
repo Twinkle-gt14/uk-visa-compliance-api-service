@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { Request } from "express";
-import { AuthGuard, HrAdminGuard, assertSelfOrHrAdmin } from "../auth/auth.guard";
+import { AuthGuard, HrAdminGuard, assertSelfOrHrAdmin, isHrLevel } from "../auth/auth.guard";
 import { ComplianceService } from "./compliance.service";
 import type { UpdateSkilledWorkerRuleDto, CreateSponsorshipAssessmentDto, RequestUploadDto, CreatePreEmploymentComplianceTypeDto, UpdatePreEmploymentComplianceTypeDto } from "./compliance.dto";
 
@@ -182,7 +182,7 @@ export class ComplianceController {
 
   @Post("documents/:documentId/confirm")
   confirmDocumentUpload(@Req() req: Request, @Param("documentId") documentId: string) {
-    const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;
+    const requesterEmployeeId = isHrLevel(req.user!.role) ? undefined : req.user!.employeeId!;
     return this.complianceService.confirmDocumentUpload(req.user!.tenantId, documentId, requesterEmployeeId);
   }
 
@@ -194,13 +194,13 @@ export class ComplianceController {
 
   @Get("documents/:documentId/download-url")
   getDocumentDownloadUrl(@Req() req: Request, @Param("documentId") documentId: string) {
-    const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;
+    const requesterEmployeeId = isHrLevel(req.user!.role) ? undefined : req.user!.employeeId!;
     return this.complianceService.getDocumentDownloadUrl(req.user!.tenantId, documentId, requesterEmployeeId);
   }
 
   @Delete("documents/:documentId")
   deleteDocument(@Req() req: Request, @Param("documentId") documentId: string) {
-    const requesterEmployeeId = req.user!.role === "hr_admin" ? undefined : req.user!.employeeId!;
+    const requesterEmployeeId = isHrLevel(req.user!.role) ? undefined : req.user!.employeeId!;
     return this.complianceService.softDeleteDocument(req.user!.tenantId, documentId, requesterEmployeeId);
   }
 
