@@ -45,6 +45,26 @@ export class AttendanceService {
     }
   }
 
+  /** Days a timesheet can't be entered on: a bank holiday, or a day the employee is on leave (approved leave
+   * or an existing leave / sick-leave attendance row). Back-dated days are fine otherwise. */
+  private async blockedDates(client: PoolClient, employeeId: string, dates: string[]): Promise<Map<string, string>> {
+    const blocked = new Map<string, string>();
+    if (!dates.length) return blocked;
+    const hol = await client.query("SELECT holiday_date FROM reference.holiday WHERE holiday_date = ANY($1::date[])", [dates]);
+    for (const r of hol.rows) blocked.set(String(r.holiday_date).slice(0, 10), "a bank holiday");
+    const att = await client.query(
+      "SELECT record_date FROM attendance.attendance_record WHERE employee_id = $1 AND record_date = ANY($2::date[]) AND status IN ('leave', 'sick-leave')",
+      [employeeId, dates]
+    );
+    for (const r of att.rows) blocked.set(String(r.record_date).slice(0, 10), "a day of leave");
+    const lv = await client.query(
+      "SELECT d::date AS d FROM unnest($2::date[]) AS d WHERE EXISTS (SELECT 1 FROM leave.leave_request lr WHERE lr.employee_id = $1 AND lr.status = 'approved' AND lr.start_date <= d AND lr.end_date >= d)",
+      [employeeId, dates]
+    );
+    for (const r of lv.rows) blocked.set(String(r.d).slice(0, 10), "a day of leave");
+    return blocked;
+  }
+
   /** Returns only the days that actually have a recorded entry - a day
    * with no row is NOT "present" by default (the old frontend mock
    * fabricated a full month; this doesn't). Weekly-off/holiday
@@ -87,6 +107,8 @@ export class AttendanceService {
     assertValidDay(day);
     return withTenant(tenantId, async (client) => {
       await this.assertOnOrAfterJoining(client, employeeId, [day.date]);
+      const blocked = await this.blockedDates(client, employeeId, [day.date]);
+      if (blocked.has(day.date)) throw new BadRequestException(`A timesheet can't be entered for ${day.date}: it is ${blocked.get(day.date)}.`);
       await this.upsertOne(client, tenantId, employeeId, day);
       return { date: day.date };
     });
@@ -104,10 +126,13 @@ export class AttendanceService {
 
     return withTenant(tenantId, async (client) => {
       await this.assertOnOrAfterJoining(client, employeeId, days.map((d) => d.date));
-      for (const day of days) {
+      // Copy-to-week/month leaves out holidays and leave days rather than failing the whole batch.
+      const blocked = await this.blockedDates(client, employeeId, days.map((d) => d.date));
+      const allowed = days.filter((d) => !blocked.has(d.date));
+      for (const day of allowed) {
         await this.upsertOne(client, tenantId, employeeId, day);
       }
-      return { count: days.length };
+      return { count: allowed.length };
     });
   }
 

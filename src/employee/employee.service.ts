@@ -183,6 +183,31 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
     return created.rows[0].id;
   }
 
+  /** Every Active, onboarded employee gets a login ("<employee id>@<company domain>", first password = their
+   * employee ID, to be changed at first sign-in). Called whenever a record is added, onboarded, edited or made
+   * Active, so a login can't be missed. It only adds a missing login, never touches an existing one, and never
+   * fails the save it follows: if the company email domain isn't set yet, it does nothing (the Users tab's
+   * "Create missing employee logins" covers that later). */
+  private async ensureEmployeeLogin(tenantId: string, employeeUuid: string): Promise<void> {
+    try {
+      const info = await withTenant(tenantId, async (client) => {
+        const e = await client.query(
+          "SELECT record_status, is_onboarded, employee_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
+          [employeeUuid]
+        );
+        const p = await client.query("SELECT email_domain FROM reference.employer_profile WHERE tenant_id = $1", [tenantId]);
+        return { emp: e.rows[0], domain: (p.rows[0]?.email_domain as string | null) || null };
+      });
+      const emp = info.emp;
+      if (!emp || emp.record_status !== "Active" || !emp.is_onboarded || !emp.employee_id_label || !info.domain) return;
+      const has = await authPool.query("SELECT 1 FROM security.credential WHERE tenant_id = $1 AND employee_id = $2", [tenantId, employeeUuid]);
+      if (has.rowCount) return;
+      await this.authService.createEmployeeCredential(tenantId, employeeUuid, `${String(emp.employee_id_label).toLowerCase()}@${info.domain.toLowerCase()}`, emp.employee_id_label);
+    } catch (err) {
+      console.error("Couldn't create the employee login:", err instanceof Error ? err.message : err);
+    }
+  }
+
   /** Every visa / right-to-work / passport / CoS expiry on Active, onboarded employees (Visa and CoS only for
    * sponsored ones, like the dashboard), plus the tenant's sponsor licence details. Days are counted from today. */
   async listExpiries(tenantId: string) {
@@ -239,6 +264,21 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /** Moves former employees (status Inactive) who left more than 5 years ago into cold storage: nothing is
+   * deleted, they just drop out of the Former Employees and Employee Register lists. Returns how many moved. */
+  async moveFormerToColdStorage(tenantId: string): Promise<{ moved: number }> {
+    return withTenant(tenantId, async (client) => {
+      const r = await client.query(
+        `UPDATE employee.employee_master m SET cold_storage_at = now(), updated_at = now()
+         WHERE m.tenant_id = $1 AND NOT m.is_deleted AND m.is_onboarded AND m.record_status = 'Inactive' AND m.cold_storage_at IS NULL
+           AND COALESCE((SELECT max(x.tentative_last_date) FROM employee.resignation_request x WHERE x.employee_id = m.id AND x.status = 'approved'),
+                        m.contract_end_date, m.updated_at::date) < CURRENT_DATE - INTERVAL '5 years'`,
+        [tenantId]
+      );
+      return { moved: r.rowCount ?? 0 };
+    });
+  }
+
   /** Employees no longer part of the organisation (status Inactive). "Left on" is the last working day of an
    * approved resignation, else the contract end date, else the day the record was made Inactive. from/to filter
    * on that date (inclusive). */
@@ -256,7 +296,7 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
            FROM employee.employee_master m
            LEFT JOIN reference.department d ON d.id = m.department_id
            LEFT JOIN LATERAL (SELECT max(tentative_last_date) AS lwd FROM employee.resignation_request x WHERE x.employee_id = m.id AND x.status = 'approved') rr ON true
-           WHERE NOT m.is_deleted AND m.is_onboarded AND m.record_status = 'Inactive'
+           WHERE NOT m.is_deleted AND m.is_onboarded AND m.record_status = 'Inactive' AND m.cold_storage_at IS NULL
          ) t
          WHERE ($1::text IS NULL OR lower(concat_ws(' ', first_name, middle_name, last_name, employee_id_label, job_title, department)) LIKE '%' || lower($1) || '%')
            AND ($2::date IS NULL OR left_on >= $2::date) AND ($3::date IS NULL OR left_on <= $3::date)
@@ -280,7 +320,9 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
     tenantId: string,
     page: number,
     pageSize: number,
-    onboarded?: boolean
+    onboarded?: boolean,
+    sort?: string,
+    dir?: string
   ): Promise<{ items: EmployeeSummary[]; total: number; page: number; pageSize: number }> {
     await this.deactivateLapsedEmployees(tenantId).catch(() => 0);
     return withTenant(tenantId, async (client) => {
@@ -291,6 +333,16 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
       // the pre-hire pipeline); Employee Register wants true (actually
       // onboarded). Omitted entirely returns everyone, for callers
       // that genuinely don't care about the distinction.
+      // Sort columns are picked from a fixed list, never interpolated from the request.
+      const SORTS: Record<string, string[]> = {
+        name: ["lower(m.first_name)", "lower(m.last_name)"],
+        date: ["COALESCE(m.date_of_joining, m.proposed_joining_date)"],
+        uk: ["m.is_uk_citizen"],
+        sponsor: ["m.sponsored_employee"],
+      };
+      const direction = dir === "desc" ? "DESC" : "ASC";
+      // The direction has to be repeated on every column of a multi-column sort (first name, then last name).
+      const orderBy = sort && SORTS[sort] ? `${SORTS[sort].map((e) => `${e} ${direction} NULLS LAST`).join(", ")}, m.created_at DESC` : "m.created_at DESC";
       const onboardedClause = onboarded === undefined ? "" : "AND m.is_onboarded = $3";
       const params = onboarded === undefined ? [pageSize, offset] : [pageSize, offset, onboarded];
       const countClause = onboarded === undefined ? "" : "AND is_onboarded = $1";
@@ -306,8 +358,8 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
       // Onboarding and every other caller (onboarded=false/undefined)
       // keeps excluding Draft - those are real works-in-progress, not
       // finished records pending a check.
-      const excludeDraftClause = onboarded === true ? "" : "AND m.record_status != 'Draft'";
-      const excludeDraftCountClause = onboarded === true ? "" : "AND record_status != 'Draft'";
+      const excludeDraftClause = onboarded === true ? "AND m.record_status NOT IN ('Inactive', 'Exited')" : "AND m.record_status != 'Draft'";
+      const excludeDraftCountClause = onboarded === true ? "AND record_status NOT IN ('Inactive', 'Exited')" : "AND record_status != 'Draft'";
 
       const [rows, count] = await Promise.all([
         client.query(
@@ -339,13 +391,13 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
                    ) r) AS rtw
            FROM employee.employee_master m
            JOIN reference.department d ON d.id = m.department_id
-           WHERE NOT m.is_deleted ${excludeDraftClause} ${onboardedClause}
-           ORDER BY m.created_at DESC
+           WHERE NOT m.is_deleted AND m.cold_storage_at IS NULL ${excludeDraftClause} ${onboardedClause}
+           ORDER BY ${orderBy}
            LIMIT $1 OFFSET $2`,
           params
         ),
         client.query(
-          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted ${excludeDraftCountClause} ${countClause}`,
+          `SELECT count(*)::int AS n FROM employee.employee_master WHERE NOT is_deleted AND cold_storage_at IS NULL ${excludeDraftCountClause} ${countClause}`,
           countParams
         ),
       ]);
@@ -673,6 +725,12 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
    * through to a normal update() - a double-submit (e.g. a retried
    * request) shouldn't error just because it isn't a draft anymore. */
   async finalize(tenantId: string, id: string, dto: EmployeeUpsertDto): Promise<{ id: string }> {
+    const result = await this.finalizeRecord(tenantId, id, dto);
+    await this.ensureEmployeeLogin(tenantId, result.id);
+    return result;
+  }
+
+  private async finalizeRecord(tenantId: string, id: string, dto: EmployeeUpsertDto): Promise<{ id: string }> {
     assertRequiredFields(dto);
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
@@ -1069,6 +1127,12 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async update(tenantId: string, id: string, dto: Partial<EmployeeUpsertDto>, changedBy?: string): Promise<{ id: string }> {
+    const result = await this.updateRecord(tenantId, id, dto, changedBy);
+    await this.ensureEmployeeLogin(tenantId, result.id);
+    return result;
+  }
+
+  private async updateRecord(tenantId: string, id: string, dto: Partial<EmployeeUpsertDto>, changedBy?: string): Promise<{ id: string }> {
     return withTenant(tenantId, async (client) => {
       const existing = await client.query(
         "SELECT id, record_status, employee_id_label FROM employee.employee_master WHERE id = $1 AND NOT is_deleted",
@@ -1368,7 +1432,7 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
                 (SELECT COUNT(*) FROM employee.employee_change_request_item i WHERE i.request_id = r.id) AS field_count
          FROM employee.employee_change_request r
          JOIN employee.employee_master m ON m.id = r.employee_id
-         WHERE r.tenant_id = $1 ${status ? "AND r.status = $2" : ""}
+         WHERE r.tenant_id = $1 AND m.record_status = 'Active' ${status ? "AND r.status = $2" : ""}
          ORDER BY r.requested_at DESC`,
         status ? [tenantId, status] : [tenantId]
       );
@@ -1842,6 +1906,12 @@ export class EmployeeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async updateStatus(tenantId: string, id: string, recordStatus: EmployeeStatus): Promise<{ id: string; recordStatus: EmployeeStatus }> {
+    const result = await this.updateStatusRecord(tenantId, id, recordStatus);
+    await this.ensureEmployeeLogin(tenantId, id);
+    return result;
+  }
+
+  private async updateStatusRecord(tenantId: string, id: string, recordStatus: EmployeeStatus): Promise<{ id: string; recordStatus: EmployeeStatus }> {
     return withTenant(tenantId, async (client) => {
       const result = await client.query(
         "UPDATE employee.employee_master SET record_status = $1, updated_at = now() WHERE id = $2 AND NOT is_deleted RETURNING id, record_status",

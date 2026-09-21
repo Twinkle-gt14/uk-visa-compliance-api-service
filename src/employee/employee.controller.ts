@@ -21,11 +21,11 @@ export class EmployeeController {
 
   @Get()
   @UseGuards(HrAdminGuard)
-  list(@Req() req: Request, @Query("page") page?: string, @Query("pageSize") pageSize?: string, @Query("onboarded") onboarded?: string) {
+  list(@Req() req: Request, @Query("page") page?: string, @Query("pageSize") pageSize?: string, @Query("onboarded") onboarded?: string, @Query("sort") sort?: string, @Query("dir") dir?: string) {
     const pageNum = Math.max(1, parseInt(page ?? "1", 10) || 1);
     const sizeNum = Math.min(MAX_PAGE_SIZE, Math.max(1, parseInt(pageSize ?? String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE));
     const onboardedFilter = onboarded === undefined ? undefined : onboarded === "true";
-    return this.employeeService.list(req.user!.tenantId, pageNum, sizeNum, onboardedFilter);
+    return this.employeeService.list(req.user!.tenantId, pageNum, sizeNum, onboardedFilter, sort, dir);
   }
 
   // These three "change-requests" routes MUST be declared before
@@ -42,6 +42,12 @@ export class EmployeeController {
   @UseGuards(HrAdminGuard)
   listExpiries(@Req() req: Request) {
     return this.employeeService.listExpiries(req.user!.tenantId);
+  }
+
+  @Post("former/cold-storage")
+  @UseGuards(HrAdminGuard)
+  moveToColdStorage(@Req() req: Request) {
+    return this.employeeService.moveFormerToColdStorage(req.user!.tenantId);
   }
 
   @Get("former")

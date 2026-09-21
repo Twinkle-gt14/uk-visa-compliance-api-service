@@ -251,6 +251,8 @@ export class LeaveService {
       let i = 1;
       if (employeeId) { conditions.push(`lr.employee_id = $${i++}`); values.push(employeeId); }
       if (status) { conditions.push(`lr.status = $${i++}`); values.push(status); }
+      // Requests of employees who are no longer Active aren't listed.
+      if (!employeeId) conditions.push("lr.employee_id IN (SELECT id FROM employee.employee_master WHERE record_status = 'Active' AND NOT is_deleted)");
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
       const result = await client.query(

@@ -228,9 +228,19 @@ export class AccessService {
 
   async listUsers(tenantId: string): Promise<UserDto[]> {
     await this.ensureSystemRoles(tenantId);
-    const result = await authPool.query(`${AccessService.USER_SELECT} WHERE c.tenant_id = $1 ORDER BY lower(c.email)`, [tenantId]);
-    const names = await this.employeeNames(tenantId, result.rows.map((r) => r.employee_id).filter(Boolean));
-    return result.rows.map((r) => this.rowToUser(r, names));
+    // Only logins that can actually sign in: active, and (for an employee's own login) the employee is Active.
+    const result = await authPool.query(`${AccessService.USER_SELECT} WHERE c.tenant_id = $1 AND c.is_active ORDER BY lower(c.email)`, [tenantId]);
+    const empIds: string[] = result.rows.map((r) => r.employee_id ?? r.source_employee_id).filter(Boolean);
+    const names = await this.employeeNames(tenantId, empIds);
+    const activeEmployees = new Set<string>();
+    if (empIds.length) {
+      const st = await withTenant(tenantId, async (client) => {
+        const r = await client.query("SELECT id FROM employee.employee_master WHERE id = ANY($1::uuid[]) AND record_status = 'Active' AND NOT is_deleted", [empIds]);
+        return r.rows;
+      });
+      for (const r of st) activeEmployees.add(r.id);
+    }
+    return result.rows.filter((r) => { const link = r.employee_id ?? r.source_employee_id; return !link || activeEmployees.has(link); }).map((r) => this.rowToUser(r, names));
   }
 
   /** Active, onboarded employees a login can be linked to, with whichever login they already have. */
@@ -342,15 +352,15 @@ export class AccessService {
       if (existing.rows[0].is_active) throw new ConflictException(`${displayName} already has the ${role.name} login ${email}.`);
       id = existing.rows[0].id; // detached earlier - bring the same login back
       await authPool.query(
-        "UPDATE security.credential SET is_active = true, role_id = $1, role = $2, display_name = $3, password_hash = crypt($4, gen_salt('bf')), must_change_password = true WHERE id = $5",
-        [role.id, this.legacyRoleText([role.access_level]), displayName || null, password, id]
+        "UPDATE security.credential SET is_active = true, role_id = $1, role = $2, display_name = $3, password_hash = crypt($4, gen_salt('bf')), must_change_password = true, source_employee_id = $6 WHERE id = $5",
+        [role.id, this.legacyRoleText([role.access_level]), displayName || null, password, id, employeeId]
       );
       await authPool.query("DELETE FROM security.credential_role WHERE credential_id = $1", [id]);
     } else {
       const inserted = await authPool.query(
-        `INSERT INTO security.credential (tenant_id, email, password_hash, role, must_change_password, role_id, display_name)
-         VALUES ($1, $2, crypt($3, gen_salt('bf')), $4, true, $5, $6) RETURNING id`,
-        [tenantId, email, password, this.legacyRoleText([role.access_level]), role.id, displayName || null]
+        `INSERT INTO security.credential (tenant_id, email, password_hash, role, must_change_password, role_id, display_name, source_employee_id)
+         VALUES ($1, $2, crypt($3, gen_salt('bf')), $4, true, $5, $6, $7) RETURNING id`,
+        [tenantId, email, password, this.legacyRoleText([role.access_level]), role.id, displayName || null, employeeId]
       );
       id = inserted.rows[0].id;
     }

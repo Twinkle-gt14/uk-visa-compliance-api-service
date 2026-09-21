@@ -62,8 +62,9 @@ export class ResignationService {
       }
       if (status) {
         params.push(status);
-        conditions.push(`status = $${params.length}`);
+        conditions.push(`status = ${params.length}`);
       }
+      if (!employeeId) conditions.push("employee_id IN (SELECT id FROM employee.employee_master WHERE record_status = 'Active' AND NOT is_deleted)");
       const result = await client.query(
         `SELECT * FROM employee.resignation_request WHERE ${conditions.join(" AND ")} ORDER BY submitted_at DESC`,
         params

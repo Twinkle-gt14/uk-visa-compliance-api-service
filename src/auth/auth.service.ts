@@ -90,7 +90,7 @@ export class AuthService {
    */
   async login(email: string, password: string): Promise<LoginResult> {
     const result = await authPool.query(
-      `SELECT c.id, c.tenant_id, c.password_hash, c.role, c.employee_id, c.must_change_password, c.email, c.is_active,
+      `SELECT c.id, c.tenant_id, c.password_hash, c.role, c.employee_id, c.source_employee_id, c.must_change_password, c.email, c.is_active,
               r.name AS role_name, r.access_level, r.permissions,
               COALESCE((SELECT json_agg(json_build_object('name', x.name, 'access_level', x.access_level, 'permissions', x.permissions))
                          FROM security.credential_role cr JOIN security.role x ON x.id = cr.role_id
@@ -125,7 +125,7 @@ export class AuthService {
     // is deliberately locked out of the employee schema entirely
     // (migration 004), so this stays a separate, narrowly-scoped query
     // against the connection that's actually allowed to read it.
-    if (row.role === "employee" && row.employee_id && !(await this.isEmployeeActive(row.tenant_id, row.employee_id))) {
+    if ((row.employee_id || row.source_employee_id) && !(await this.isEmployeeActive(row.tenant_id, row.employee_id || row.source_employee_id))) {
       return { ok: false, error: "This employee record is not Active. Contact HR to reactivate it before signing in." };
     }
 
@@ -206,7 +206,7 @@ export class AuthService {
     // forcing a real re-login rather than silently keeping a deleted
     // account's session alive.
     const result = await authPool.query(
-      `SELECT c.tenant_id, c.role, c.employee_id, c.email, c.is_active, r.name AS role_name, r.access_level, r.permissions,
+      `SELECT c.tenant_id, c.role, c.employee_id, c.source_employee_id, c.email, c.is_active, r.name AS role_name, r.access_level, r.permissions,
               COALESCE((SELECT json_agg(json_build_object('name', x.name, 'access_level', x.access_level, 'permissions', x.permissions))
                          FROM security.credential_role cr JOIN security.role x ON x.id = cr.role_id
                          WHERE cr.credential_id = c.id), '[]'::json) AS extra_roles
@@ -229,7 +229,7 @@ export class AuthService {
     // about: HR deactivating this employee mid-session should stop
     // silent renewal working from that point on, not just block the
     // next fresh sign-in.
-    if (row.role === "employee" && row.employee_id && !(await this.isEmployeeActive(row.tenant_id, row.employee_id))) {
+    if ((row.employee_id || row.source_employee_id) && !(await this.isEmployeeActive(row.tenant_id, row.employee_id || row.source_employee_id))) {
       return { ok: false, error: "This employee record is not Active. Contact HR to reactivate it before signing in." };
     }
 

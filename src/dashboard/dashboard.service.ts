@@ -6,6 +6,8 @@ export interface DashboardLayoutItem {
   id: string;
   size: number;
   height?: number;
+  /** Starts a new row in its group instead of flowing after the previous widget. */
+  newRow?: boolean;
   visible: boolean;
 }
 
@@ -36,7 +38,7 @@ export class DashboardService {
       if (!item || typeof item.id !== "string" || !item.id || !isValidSize(item.size) || !isValidHeight(item.height) || typeof item.visible !== "boolean") {
         throw new BadRequestException("Invalid layout item.");
       }
-      clean.push({ id: item.id, size: item.size, ...(item.height ? { height: item.height } : {}), visible: item.visible });
+      clean.push({ id: item.id, size: item.size, ...(item.height ? { height: item.height } : {}), ...(item.newRow === true ? { newRow: true } : {}), visible: item.visible });
     }
     return withTenant(tenantId, async (client) => {
       await client.query(
